@@ -65,7 +65,7 @@ class Pipeline:
         """
         if held_duration > 0.5 and self._active:
             self._stop_recording()
-        else:
+        elif self._active:
             self._tap_mode_on = True
 
     # ── internal ─────────────────────────────────────────────────────────────
@@ -78,6 +78,8 @@ class Pipeline:
         self._recorder.start(self._handle_frame)
 
     def _stop_recording(self) -> None:
+        if not self._active:
+            return
         self._active = False
         self._tap_mode_on = False
         self._recorder.stop()
@@ -105,34 +107,37 @@ class Pipeline:
             self._futures.append(future)
 
     def _collect_and_paste(self) -> None:
-        with self._lock:
-            futures, self._futures = list(self._futures), []
+        try:
+            with self._lock:
+                futures, self._futures = list(self._futures), []
 
-        transcripts: list[str] = []
-        for f in futures:
-            try:
-                transcripts.append(f.result(timeout=30))
-            except Exception:
-                pass
+            transcripts: list[str] = []
+            for f in futures:
+                try:
+                    transcripts.append(f.result(timeout=30))
+                except Exception:
+                    pass
 
-        if not transcripts:
+            if not transcripts:
+                self._on_state("idle")
+                return
+
+            cleaned: list[str] = []
+            for t in transcripts:
+                result = self._cleanup.process(t)
+                if result:
+                    cleaned.append(result)
+
+            final = self._cleanup.flush()
+            if final:
+                cleaned.append(final)
+
+            if cleaned:
+                paste(" ".join(cleaned))
+        except Exception as exc:
+            print(f"[not-wisprflow] Error during transcription/paste: {exc}")
+        finally:
             self._on_state("idle")
-            return
-
-        cleaned: list[str] = []
-        for t in transcripts:
-            result = self._cleanup.process(t)
-            if result:
-                cleaned.append(result)
-
-        final = self._cleanup.flush()
-        if final:
-            cleaned.append(final)
-
-        if cleaned:
-            paste(" ".join(cleaned))
-
-        self._on_state("idle")
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False)

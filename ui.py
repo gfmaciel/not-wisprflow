@@ -4,7 +4,8 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QApplication
 from PySide6.QtCore import Qt, QTimer, Signal, QObject
 from PySide6.QtGui import QPainter, QColor, QPen
 
-BAR_HEIGHT = 48
+BAR_HEIGHT = 28
+BAR_WIDTH = 360
 WAVEFORM_HISTORY = 120
 PULSE_TICK_MS = 60
 
@@ -51,12 +52,13 @@ class _WaveformWidget(QWidget):
 
         if self._state in ("recording", "processing"):
             samples = list(self._samples)
-            bar_w = max(2, w // len(samples))
+            bar_w = max(3, w // len(samples))
             color = QColor("#00d4aa") if self._state == "recording" else QColor("#00d4aa").darker(150)
             p.setPen(QPen(color, 1))
             mid = h // 2
             for i, amp in enumerate(samples):
-                bh = int(amp * (h - 4))
+                amp_scaled = min(1.0, amp * 6)
+                bh = int(amp_scaled * (h - 4))
                 p.drawLine(i * bar_w, mid - bh // 2, i * bar_w, mid + bh // 2)
 
             if self._state == "processing":
@@ -69,7 +71,8 @@ class StatusBar(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         screen = QApplication.primaryScreen().geometry()
-        self.setGeometry(screen.x(), screen.y(), screen.width(), BAR_HEIGHT)
+        x = screen.x() + (screen.width() - BAR_WIDTH) // 2
+        self.setGeometry(x, screen.y(), BAR_WIDTH, BAR_HEIGHT)
         self.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )

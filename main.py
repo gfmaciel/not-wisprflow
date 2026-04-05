@@ -33,9 +33,14 @@ def main() -> None:
 
     # keyboard.add_hotkey handles modifier combos on press;
     # on_release_key fires when the trigger key is lifted.
-    trigger = config.hotkey.split("+")[-1]
-    keyboard.add_hotkey(config.hotkey, on_press, suppress=True)
-    keyboard.on_release_key(trigger, on_release)
+    try:
+        trigger = config.hotkey.split("+")[-1]
+        keyboard.add_hotkey(config.hotkey, on_press, suppress=True)
+        keyboard.on_release_key(trigger, on_release)
+    except ValueError as exc:
+        print(f"[not-wisprflow] Invalid HOTKEY '{config.hotkey}': {exc}")
+        print("  Fix HOTKEY in your .env — examples: ctrl+shift+space, alt+s, ctrl+f1")
+        sys.exit(1)
 
     print(f"[not-wisprflow] Running. Hotkey: {config.hotkey}  (Ctrl+C to quit)")
 
