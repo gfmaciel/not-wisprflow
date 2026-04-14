@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 from dotenv import load_dotenv
+from cleanup import _SYS_BASE
 
 load_dotenv()
 
@@ -17,6 +18,7 @@ class Config:
     groq_api_key: str
     transcription_model: str = "whisper-large-v3-turbo"
     cleanup_model: str = "openai/gpt-oss-20b"
+    cleanup_prompt: str = field(default_factory=lambda: _SYS_BASE)
     languages: list[str] = field(default_factory=lambda: ["Portuguese", "English"])
     hotkey: str = "ctrl+shift+space"
     silence_aggressiveness: int = 1
@@ -32,6 +34,7 @@ class Config:
             groq_api_key=api_key,
             transcription_model=os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3-turbo"),
             cleanup_model=os.getenv("CLEANUP_MODEL", "openai/gpt-oss-20b"),
+            cleanup_prompt=os.getenv("CLEANUP_SYSTEM_PROMPT", _SYS_BASE),
             languages=[
                 l.strip()
                 for l in os.getenv("LANGUAGES", "Portuguese,English").split(",")

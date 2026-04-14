@@ -48,7 +48,7 @@ class Pipeline:
         self._transcriber = Transcriber(
             self._groq, config.transcription_model, config.whisper_language
         )
-        self._cleanup = CleanupProcessor(self._groq, config.cleanup_model, config.languages)
+        self._cleanup = CleanupProcessor(self._groq, config.cleanup_model, config.languages, config.cleanup_prompt)
         self._executor = ThreadPoolExecutor(max_workers=4)
 
         self._futures: list[Future] = []

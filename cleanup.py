@@ -19,10 +19,11 @@ def ends_with_sentence(text: str) -> bool:
 class CleanupProcessor:
     """Buffers incomplete sentence fragments; calls LLM only on complete sentences."""
 
-    def __init__(self, groq_client, model: str, languages: list[str]):
+    def __init__(self, groq_client, model: str, languages: list[str], prompt: str = _SYS_BASE):
         self._client = groq_client
         self._model = model
         self._languages = languages
+        self._prompt = prompt
         self._fragment = ""
 
     def process(self, transcript: str) -> Optional[str]:
@@ -42,7 +43,7 @@ class CleanupProcessor:
         return self._call_llm(text)
 
     def _call_llm(self, text: str) -> str:
-        system = _SYS_BASE
+        system = self._prompt
         if self._languages:
             langs = ", ".join(self._languages)
             system += f"\nThe user may speak any of the following languages: {langs}."
