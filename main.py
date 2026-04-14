@@ -19,7 +19,7 @@ def main() -> None:
     pipeline = Pipeline(
         config,
         on_state=lambda s: bar.signals.state_changed.emit(s),
-        on_amplitude=lambda a: bar.signals.amplitude.emit(a),
+        on_spectrum=lambda bands: bar.signals.spectrum.emit(tuple(bands)),
     )
 
     _press_time: list[float] = [0.0]
