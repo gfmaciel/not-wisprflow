@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QMainWindow, QWidget, QApplication, QVBoxLayout
+from PySide6.QtWidgets import QMainWindow, QWidget, QApplication, QVBoxLayout, QSystemTrayIcon, QMenu
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QRectF
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QBrush
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QBrush, QIcon, QPixmap
 
 WINDOW_WIDTH = 224
 WINDOW_HEIGHT = 54
@@ -16,6 +16,18 @@ BAR_WIDTH = 6
 BAR_MIN_HEIGHT = 3
 BAR_MAX_EXTRA = 31
 TICK_MS = 16
+
+
+def _make_circle_icon(color: QColor, size: int = 22) -> QIcon:
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(color)
+    painter.drawEllipse(1, 1, size - 2, size - 2)
+    painter.end()
+    return QIcon(pixmap)
 
 
 class _Signals(QObject):
@@ -195,6 +207,19 @@ class StatusBar(QMainWindow):
         self.hide()
         self._remove_dwm_border()
 
+        self._tray_icons = {
+            "idle":       _make_circle_icon(QColor(50, 200, 80)),
+            "recording":  _make_circle_icon(QColor(220, 50, 50)),
+            "processing": _make_circle_icon(QColor(230, 140, 30)),
+        }
+        self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(self._tray_icons["idle"])
+        self._tray.setToolTip("not-wisprflow — standby")
+        tray_menu = QMenu()
+        tray_menu.addAction("Quit").triggered.connect(QApplication.quit)
+        self._tray.setContextMenu(tray_menu)
+        self._tray.show()
+
     def _remove_dwm_border(self) -> None:
         try:
             import ctypes
@@ -219,6 +244,12 @@ class StatusBar(QMainWindow):
     def _on_state(self, state: str) -> None:
         self._waveform.set_state(state)
         self.hide() if state == "idle" else self.show()
+        self._tray.setIcon(self._tray_icons.get(state, self._tray_icons["idle"]))
+        self._tray.setToolTip({
+            "idle":       "not-wisprflow — standby",
+            "recording":  "not-wisprflow — recording\u2026",
+            "processing": "not-wisprflow — processing\u2026",
+        }.get(state, "not-wisprflow"))
 
     def set_error(self, message: str) -> None:
         self.signals.state_changed.emit("error")
