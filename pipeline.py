@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Callable, Optional, Sequence
 
 from groq import Groq
+from openai import OpenAI
 
 from config import Config
 from recorder import Recorder
@@ -38,7 +39,26 @@ class Pipeline:
         self._on_state = on_state or (lambda _: None)
         self._on_spectrum = on_spectrum or (lambda _: None)
 
-        self._groq = Groq(api_key=config.groq_api_key)
+        # Build available clients
+        groq_client = Groq(api_key=config.groq_api_key) if config.groq_api_key else None
+        openai_client = OpenAI(api_key=config.openai_api_key) if config.openai_api_key else None
+
+        # Assign primary and fallback based on configured provider
+        if config.primary_provider == "openai":
+            primary_client = openai_client
+            primary_trans_model = config.openai_transcription_model
+            primary_cleanup_model = config.openai_cleanup_model
+            fallback_client = groq_client
+            fallback_trans_model = config.transcription_model
+            fallback_cleanup_model = config.cleanup_model
+        else:  # groq (default)
+            primary_client = groq_client
+            primary_trans_model = config.transcription_model
+            primary_cleanup_model = config.cleanup_model
+            fallback_client = openai_client
+            fallback_trans_model = config.openai_transcription_model
+            fallback_cleanup_model = config.openai_cleanup_model
+
         self._recorder = Recorder()
         self._chunker = Chunker(
             aggressiveness=config.silence_aggressiveness,
@@ -46,9 +66,20 @@ class Pipeline:
             min_duration=config.min_chunk_duration,
         )
         self._transcriber = Transcriber(
-            self._groq, config.transcription_model, config.whisper_language
+            primary_client,
+            primary_trans_model,
+            config.whisper_language,
+            fallback_client=fallback_client,
+            fallback_model=fallback_trans_model if fallback_client else None,
         )
-        self._cleanup = CleanupProcessor(self._groq, config.cleanup_model, config.languages, config.cleanup_prompt)
+        self._cleanup = CleanupProcessor(
+            primary_client,
+            primary_cleanup_model,
+            config.languages,
+            config.cleanup_prompt,
+            fallback_client=fallback_client,
+            fallback_model=fallback_cleanup_model if fallback_client else None,
+        )
         self._executor = ThreadPoolExecutor(max_workers=4)
 
         self._futures: list[Future] = []

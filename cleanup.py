@@ -19,11 +19,22 @@ def ends_with_sentence(text: str) -> bool:
 class CleanupProcessor:
     """Buffers incomplete sentence fragments; calls LLM only on complete sentences."""
 
-    def __init__(self, groq_client, model: str, languages: list[str], prompt: str = _SYS_BASE):
-        self._client = groq_client
+    def __init__(
+        self,
+        client,
+        model: str,
+        languages: list[str],
+        prompt: str = _SYS_BASE,
+        *,
+        fallback_client=None,
+        fallback_model: Optional[str] = None,
+    ):
+        self._client = client
         self._model = model
         self._languages = languages
         self._prompt = prompt
+        self._fallback_client = fallback_client
+        self._fallback_model = fallback_model
         self._fragment = ""
 
     def process(self, transcript: str) -> Optional[str]:
@@ -42,16 +53,33 @@ class CleanupProcessor:
         text, self._fragment = self._fragment, ""
         return self._call_llm(text)
 
-    def _call_llm(self, text: str) -> str:
+    def _build_system_prompt(self) -> str:
         system = self._prompt
         if self._languages:
             langs = ", ".join(self._languages)
             system += f"\nThe user may speak any of the following languages: {langs}."
-        r = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ],
-        )
+        return system
+
+    def _call_provider(self, client, model: str, messages: list) -> str:
+        r = client.chat.completions.create(model=model, messages=messages)
         return r.choices[0].message.content.strip()
+
+    def _call_llm(self, text: str) -> str:
+        messages = [
+            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "user", "content": text},
+        ]
+        try:
+            return self._call_provider(self._client, self._model, messages)
+        except Exception as exc:
+            if self._fallback_client is None:
+                raise
+            print(
+                f"[not-wisprflow] LLM cleanup primary provider failed ({exc}); "
+                "retrying with fallback provider."
+            )
+            return self._call_provider(
+                self._fallback_client,
+                self._fallback_model or self._model,
+                messages,
+            )
