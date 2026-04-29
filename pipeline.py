@@ -12,7 +12,7 @@ from audio_analysis import analyze_mic_frame
 from chunker import Chunker
 from transcriber import Transcriber
 from cleanup import CleanupProcessor
-from paste_text import paste
+from paste_text import paste, paste_stream
 
 _SPURIOUS_TRANSCRIPTS = {
     "thank you",
@@ -86,6 +86,20 @@ class Pipeline:
         self._lock = threading.Lock()
         self._active = False
         self._tap_mode_on = False
+
+        self._executor.submit(self._warmup)
+
+    def _warmup(self) -> None:
+        """Best-effort: open the cleanup HTTP/2 connection so the first real
+        request doesn't pay the TLS+handshake (~50–150ms) on cold start."""
+        try:
+            self._cleanup._client.chat.completions.create(
+                model=self._cleanup._model,
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=1,
+            )
+        except Exception:
+            pass
 
     # ── public hotkey API ────────────────────────────────────────────────────
 
@@ -170,12 +184,21 @@ class Pipeline:
                     transcripts.append(transcript.strip())
 
             merged = " ".join(part for part in transcripts if part)
-            if merged:
-                result = self._cleanup.process(merged)
-                final = self._cleanup.flush()
-                output = result or final
-                if output and not self._should_skip_text(output):
-                    paste(output)
+            if not merged or self._should_skip_text(merged):
+                return
+
+            try:
+                typed = paste_stream(self._cleanup.stream(merged))
+                if typed:
+                    return
+            except Exception as exc:
+                print(f"[not-wisprflow] Streaming cleanup failed ({exc}); falling back.")
+
+            result = self._cleanup.process(merged)
+            final = self._cleanup.flush()
+            output = result or final
+            if output and not self._should_skip_text(output):
+                paste(output)
         except Exception as exc:
             print(f"[not-wisprflow] Error during transcription/paste: {exc}")
         finally:
