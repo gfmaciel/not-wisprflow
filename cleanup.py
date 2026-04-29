@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Iterator, Optional
 
 _ENDINGS = (".", "?", "!")
 
@@ -72,6 +72,25 @@ class CleanupProcessor:
     def _call_provider(self, client, model: str, messages: list) -> str:
         r = client.chat.completions.create(model=model, messages=messages)
         return r.choices[0].message.content.strip()
+
+    def stream(self, text: str) -> Iterator[str]:
+        """Yields cleaned-text deltas from the primary cleanup LLM.
+
+        Streaming uses the primary client only; if it fails, the caller is
+        expected to fall back to the non-stream `process`/`flush` path which
+        already handles primary→fallback provider swap.
+        """
+        messages = [
+            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "user", "content": text},
+        ]
+        response = self._client.chat.completions.create(
+            model=self._model, messages=messages, stream=True,
+        )
+        for event in response:
+            delta = event.choices[0].delta.content or ""
+            if delta:
+                yield delta
 
     def _call_llm(self, text: str) -> str:
         messages = [

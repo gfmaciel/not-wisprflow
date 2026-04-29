@@ -8,7 +8,7 @@ Lightweight Windows dictation tool. Press a hotkey, speak, and cleaned text past
 2. **Chunk** — webrtcvad silence detection flushes speech segments mid-recording
 3. **Transcribe** — each chunk sent to the configured Whisper provider in parallel (with automatic fallback)
 4. **Clean up** — complete sentences cleaned by LLM (punctuation, grammar, filler words)
-5. **Paste** — result pasted at active cursor via Ctrl+V
+5. **Paste** — cleanup tokens are typed at the active cursor as they stream in, so the first characters appear as soon as the LLM starts emitting (instead of waiting for the full response). If streaming fails before any output, the tool falls back to clipboard + Ctrl+V. Keep the target window focused after releasing the hotkey, since incremental typing goes wherever focus lands.
 
 ## Requirements
 
@@ -57,7 +57,7 @@ If only one key is configured the tool works with that provider alone (no fallba
 | `GROQ_API_KEY` | *(required if Groq is primary)* | Your Groq API key |
 | `OPENAI_API_KEY` | *(required if OpenAI is primary)* | Your OpenAI API key |
 | `TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Groq Whisper model |
-| `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Groq LLM cleanup model |
+| `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Groq LLM cleanup model (try `llama-3.1-8b-instant` for lower latency at some quality cost) |
 | `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1` | OpenAI Whisper model |
 | `OPENAI_CLEANUP_MODEL` | `gpt-4o-mini` | OpenAI LLM cleanup model |
 | `LANGUAGES` | `Portuguese,English` | Comma-separated languages |

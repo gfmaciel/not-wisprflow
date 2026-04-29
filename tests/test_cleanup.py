@@ -113,3 +113,40 @@ def test_backward_compat_constructor():
     """Original 3-arg positional call still works (no fallback params)."""
     p = CleanupProcessor(MagicMock(), "m", ["English"])
     assert p._fallback_client is None
+
+
+# ── Streaming tests ───────────────────────────────────────────────────────────
+
+def _streaming_client(deltas):
+    """Mock client whose chat.completions.create returns an iterable of
+    chunk objects with .choices[0].delta.content set to each delta."""
+    def _make_chunk(content):
+        return MagicMock(choices=[MagicMock(delta=MagicMock(content=content))])
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(_make_chunk(d) for d in deltas)
+    return client
+
+
+def test_stream_yields_deltas():
+    client = _streaming_client(["Hel", "lo ", "world."])
+    p = CleanupProcessor(client, "m", ["English"])
+    out = list(p.stream("hello world."))
+    assert out == ["Hel", "lo ", "world."]
+    call_kwargs = client.chat.completions.create.call_args[1]
+    assert call_kwargs["stream"] is True
+    assert call_kwargs["model"] == "m"
+
+
+def test_stream_skips_empty_deltas():
+    client = _streaming_client(["Hi", None, "", " there."])
+    p = CleanupProcessor(client, "m", ["English"])
+    assert list(p.stream("hi there.")) == ["Hi", " there."]
+
+
+def test_stream_uses_system_prompt_with_languages():
+    client = _streaming_client(["x"])
+    p = CleanupProcessor(client, "m", ["Portuguese", "English"])
+    list(p.stream("test."))
+    sys_msg = client.chat.completions.create.call_args[1]["messages"][0]["content"]
+    assert "Portuguese" in sys_msg and "English" in sys_msg
