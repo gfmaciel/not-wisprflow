@@ -1,7 +1,7 @@
 import os
 import pytest
 from unittest.mock import patch
-from config import Config
+from config import Config, parse_model_spec
 
 
 def test_config_loads_from_env():
@@ -60,7 +60,6 @@ def test_config_openai_primary_with_key():
 
 
 def test_config_groq_no_openai_key():
-    """OpenAI key absent — openai_api_key should be None (fallback disabled)."""
     env = {"GROQ_API_KEY": "gsk_test"}
     with patch.dict(os.environ, env, clear=True):
         c = Config.from_env()
@@ -99,3 +98,60 @@ def test_config_defaults():
         c = Config.from_env()
     assert c.transcription_model == "whisper-large-v3-turbo"
     assert c.hotkey == "alt+\\"
+    assert c.processing_mode == "dual"
+
+
+def test_parse_model_spec_explicit_and_inferred():
+    assert parse_model_spec("openai:gpt-audio-mini") == ("openai", "gpt-audio-mini")
+    assert parse_model_spec("gemini:gemini-3.6-flash") == ("gemini", "gemini-3.6-flash")
+    assert parse_model_spec("gemini-3.6-flash") == ("gemini", "gemini-3.6-flash")
+    assert parse_model_spec("gpt-audio-mini") == ("openai", "gpt-audio-mini")
+
+
+def test_mono_openai_loads_from_env():
+    env = {
+        "PROCESSING_MODE": "mono",
+        "MONO_MODEL": "openai:gpt-audio-mini",
+        "OPENAI_API_KEY": "sk_test",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        c = Config.from_env()
+    assert c.processing_mode == "mono"
+    assert c.mono_model == "openai:gpt-audio-mini"
+
+
+def test_mono_gemini_loads_from_env():
+    env = {
+        "PROCESSING_MODE": "mono",
+        "MONO_MODEL": "gemini:gemini-3.6-flash",
+        "GEMINI_API_KEY": "gem_test",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        c = Config.from_env()
+    assert c.processing_mode == "mono"
+    assert c.gemini_api_key == "gem_test"
+
+
+def test_mono_requires_matching_provider_key():
+    env = {
+        "PROCESSING_MODE": "mono",
+        "MONO_MODEL": "gemini:gemini-3.6-flash",
+        "OPENAI_API_KEY": "sk_test",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+            Config.from_env()
+
+
+def test_dual_can_mix_openai_and_gemini():
+    env = {
+        "PROCESSING_MODE": "dual",
+        "TRANSCRIPTION_MODEL": "openai:gpt-4o-mini-transcribe",
+        "CLEANUP_MODEL": "gemini:gemini-3.6-flash",
+        "OPENAI_API_KEY": "sk_test",
+        "GEMINI_API_KEY": "gem_test",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        c = Config.from_env()
+    assert c.transcription_model.startswith("openai:")
+    assert c.cleanup_model.startswith("gemini:")
