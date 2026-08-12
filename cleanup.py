@@ -30,19 +30,19 @@ class CleanupProcessor:
 
     def __init__(
         self,
-        client,
+        provider,
         model: str,
         languages: list[str],
         prompt: str = _SYS_BASE,
         *,
-        fallback_client=None,
+        fallback_provider=None,
         fallback_model: Optional[str] = None,
     ):
-        self._client = client
+        self._provider = provider
         self._model = model
         self._languages = languages
         self._prompt = prompt
-        self._fallback_client = fallback_client
+        self._fallback_provider = fallback_provider
         self._fallback_model = fallback_model
         self._fragment = ""
 
@@ -69,45 +69,27 @@ class CleanupProcessor:
             system += f"\nThe user may speak any of the following languages: {langs}."
         return system
 
-    def _call_provider(self, client, model: str, messages: list) -> str:
-        r = client.chat.completions.create(model=model, messages=messages)
-        return r.choices[0].message.content.strip()
-
     def stream(self, text: str) -> Iterator[str]:
-        """Yields cleaned-text deltas from the primary cleanup LLM.
-
-        Streaming uses the primary client only; if it fails, the caller is
-        expected to fall back to the non-stream `process`/`flush` path which
-        already handles primary→fallback provider swap.
-        """
-        messages = [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": text},
-        ]
-        response = self._client.chat.completions.create(
-            model=self._model, messages=messages, stream=True,
+        """Yields cleaned-text deltas from the primary cleanup provider."""
+        yield from self._provider.stream_cleanup(
+            text,
+            self._model,
+            self._build_system_prompt(),
         )
-        for event in response:
-            delta = event.choices[0].delta.content or ""
-            if delta:
-                yield delta
 
     def _call_llm(self, text: str) -> str:
-        messages = [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": text},
-        ]
+        system_prompt = self._build_system_prompt()
         try:
-            return self._call_provider(self._client, self._model, messages)
+            return self._provider.cleanup(text, self._model, system_prompt)
         except Exception as exc:
-            if self._fallback_client is None:
+            if self._fallback_provider is None:
                 raise
             print(
                 f"[not-wisprflow] LLM cleanup primary provider failed ({exc}); "
                 "retrying with fallback provider."
             )
-            return self._call_provider(
-                self._fallback_client,
+            return self._fallback_provider.cleanup(
+                text,
                 self._fallback_model or self._model,
-                messages,
+                system_prompt,
             )
