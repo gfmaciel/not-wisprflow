@@ -11,6 +11,30 @@ _LANG_CODES = {
     "portuguese": "pt", "english": "en", "spanish": "es",
     "french": "fr", "german": "de", "italian": "it",
 }
+_KNOWN_PROVIDERS = {"groq", "openai", "gemini"}
+
+
+def parse_model_spec(spec: str, default_provider: Optional[str] = None) -> tuple[str, str]:
+    """Resolve `provider:model`; infer Gemini/OpenAI for common raw model names."""
+    raw = spec.strip()
+    if ":" in raw:
+        provider, model = raw.split(":", 1)
+        provider = provider.strip().lower()
+        model = model.strip()
+        if provider in _KNOWN_PROVIDERS and model:
+            return provider, model
+
+    lower = raw.lower()
+    if lower.startswith("gemini-"):
+        return "gemini", raw
+    if lower.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai", raw
+    if default_provider:
+        return default_provider, raw
+    raise ValueError(
+        f"Cannot infer provider for model {spec!r}. Use provider:model "
+        "(for example openai:gpt-audio-mini or gemini:gemini-3.6-flash)."
+    )
 
 
 @dataclass
@@ -28,9 +52,18 @@ class Config:
     openai_api_key: Optional[str] = None
     openai_transcription_model: str = "whisper-1"
     openai_cleanup_model: str = "gpt-4o-mini"
+    gemini_api_key: Optional[str] = None
+    processing_mode: str = "dual"
+    mono_model: str = "openai:gpt-audio-mini"
 
     @classmethod
     def from_env(cls) -> Config:
+        mode = os.getenv("PROCESSING_MODE", "dual").strip().lower()
+        if mode not in ("dual", "mono"):
+            raise ValueError(
+                f"PROCESSING_MODE must be 'dual' or 'mono', got: {mode!r}"
+            )
+
         primary = os.getenv("PRIMARY_PROVIDER", "groq").strip().lower()
         if primary not in ("groq", "openai"):
             raise ValueError(
@@ -39,30 +72,74 @@ class Config:
 
         groq_api_key = os.getenv("GROQ_API_KEY", "").strip() or None
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
+        gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
 
-        if not groq_api_key and not openai_api_key:
-            raise ValueError(
-                "No API key configured. Set GROQ_API_KEY and/or OPENAI_API_KEY in environment / .env"
-            )
+        transcription_model = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
+        cleanup_model = os.getenv("CLEANUP_MODEL", "openai/gpt-oss-20b")
+        mono_model = os.getenv("MONO_MODEL", "openai:gpt-audio-mini")
 
-        # Graceful degradation: if the primary provider's key is missing, promote the fallback
-        if primary == "groq" and not groq_api_key:
-            print(
-                "[not-wisprflow] WARNING: GROQ_API_KEY not set; "
-                "switching to OpenAI as primary provider."
-            )
-            primary = "openai"
-        elif primary == "openai" and not openai_api_key:
-            print(
-                "[not-wisprflow] WARNING: OPENAI_API_KEY not set; "
-                "switching to Groq as primary provider."
-            )
-            primary = "groq"
+        keys = {
+            "groq": groq_api_key,
+            "openai": openai_api_key,
+            "gemini": gemini_api_key,
+        }
+
+        if mode == "mono":
+            mono_provider, _ = parse_model_spec(mono_model)
+            if mono_provider == "groq":
+                raise ValueError(
+                    "PROCESSING_MODE=mono supports OpenAI or Gemini audio-capable models, not Groq."
+                )
+            if not keys[mono_provider]:
+                raise ValueError(
+                    f"{mono_provider.upper()}_API_KEY is required by MONO_MODEL={mono_model!r}"
+                )
+        else:
+            # Explicit provider:model settings are authoritative and must have their key.
+            for label, spec in (
+                ("TRANSCRIPTION_MODEL", transcription_model),
+                ("CLEANUP_MODEL", cleanup_model),
+            ):
+                if ":" in spec or spec.lower().startswith(("gemini-", "gpt-", "o1", "o3", "o4")):
+                    provider, _ = parse_model_spec(spec, primary)
+                    if not keys[provider]:
+                        raise ValueError(
+                            f"{provider.upper()}_API_KEY is required by {label}={spec!r}"
+                        )
+
+            def _explicit(spec: str) -> bool:
+                lower = spec.lower()
+                return (
+                    ":" in spec
+                    or lower.startswith("gemini-")
+                    or lower.startswith(("gpt-", "o1", "o3", "o4"))
+                )
+
+            # Any raw stage keeps the previous PRIMARY_PROVIDER + OpenAI/Groq fallback behavior.
+            legacy_needed = not _explicit(transcription_model) or not _explicit(cleanup_model)
+            if legacy_needed:
+                if not groq_api_key and not openai_api_key:
+                    raise ValueError(
+                        "No API key configured for a legacy dual-mode stage. Set GROQ_API_KEY "
+                        "and/or OPENAI_API_KEY, or use provider:model for that stage."
+                    )
+                if primary == "groq" and not groq_api_key:
+                    print(
+                        "[not-wisprflow] WARNING: GROQ_API_KEY not set; "
+                        "switching to OpenAI as primary provider."
+                    )
+                    primary = "openai"
+                elif primary == "openai" and not openai_api_key:
+                    print(
+                        "[not-wisprflow] WARNING: OPENAI_API_KEY not set; "
+                        "switching to Groq as primary provider."
+                    )
+                    primary = "groq"
 
         return cls(
             groq_api_key=groq_api_key,
-            transcription_model=os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3-turbo"),
-            cleanup_model=os.getenv("CLEANUP_MODEL", "openai/gpt-oss-20b"),
+            transcription_model=transcription_model,
+            cleanup_model=cleanup_model,
             cleanup_prompt=os.getenv("CLEANUP_SYSTEM_PROMPT", _SYS_BASE),
             languages=[
                 l.strip()
@@ -77,6 +154,9 @@ class Config:
             openai_api_key=openai_api_key,
             openai_transcription_model=os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1"),
             openai_cleanup_model=os.getenv("OPENAI_CLEANUP_MODEL", "gpt-4o-mini"),
+            gemini_api_key=gemini_api_key,
+            processing_mode=mode,
+            mono_model=mono_model,
         )
 
     @property
