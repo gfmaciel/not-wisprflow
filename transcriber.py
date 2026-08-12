@@ -1,46 +1,37 @@
 from __future__ import annotations
-import io
 from typing import Optional
 
 
 class Transcriber:
-    """Sends a WAV chunk to Whisper (primary provider, with optional fallback); returns the transcript string."""
+    """Sends a WAV chunk to the configured provider, with optional fallback."""
 
     def __init__(
         self,
-        client,
+        provider,
         model: str,
         language: Optional[str] = None,
         *,
-        fallback_client=None,
+        fallback_provider=None,
         fallback_model: Optional[str] = None,
     ):
-        self._client = client
+        self._provider = provider
         self._model = model
         self._language = language
-        self._fallback_client = fallback_client
+        self._fallback_provider = fallback_provider
         self._fallback_model = fallback_model
 
     def transcribe(self, wav_bytes: bytes) -> str:
-        kwargs: dict = dict(
-            file=("audio.wav", io.BytesIO(wav_bytes), "audio/wav"),
-            model=self._model,
-            response_format="text",
-        )
-        if self._language:
-            kwargs["language"] = self._language
         try:
-            result = self._client.audio.transcriptions.create(**kwargs)
-            return result.strip() if isinstance(result, str) else result.text.strip()
+            return self._provider.transcribe(wav_bytes, self._model, self._language)
         except Exception as exc:
-            if self._fallback_client is None:
+            if self._fallback_provider is None:
                 raise
             print(
                 f"[not-wisprflow] Transcription primary provider failed ({exc}); "
                 "retrying with fallback provider."
             )
-            # Re-wrap BytesIO — the original was consumed by the failed primary call
-            kwargs["file"] = ("audio.wav", io.BytesIO(wav_bytes), "audio/wav")
-            kwargs["model"] = self._fallback_model or self._model
-            result = self._fallback_client.audio.transcriptions.create(**kwargs)
-            return result.strip() if isinstance(result, str) else result.text.strip()
+            return self._fallback_provider.transcribe(
+                wav_bytes,
+                self._fallback_model or self._model,
+                self._language,
+            )
