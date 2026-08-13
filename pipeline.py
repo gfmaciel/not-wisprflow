@@ -9,6 +9,7 @@ from audio_analysis import analyze_mic_frame
 from chunker import Chunker
 from transcriber import Transcriber
 from cleanup import CleanupProcessor
+from mono_processor import MonoProcessor
 from paste_text import paste, paste_stream
 from providers import GeminiProvider, GroqProvider, OpenAIProvider
 
@@ -35,8 +36,10 @@ class Pipeline:
     """
     Orchestrates the full record -> chunk -> AI -> paste flow.
 
-    dual: chunk -> transcription model -> cleanup model -> paste
-    mono: chunk -> one audio-capable model that transcribes + cleans -> paste
+    dual: chunks transcribed in parallel -> merged -> cleanup model -> paste
+    mono: chunks processed sequentially by one multimodal model; high-confidence
+          complete thoughts paste immediately, incomplete text becomes context
+          for the next chunk and is force-flushed when recording ends.
     """
 
     def __init__(
@@ -60,15 +63,21 @@ class Pipeline:
 
         self._transcriber = None
         self._cleanup = None
-        self._mono_provider = None
-        self._mono_model = None
-        self._mono_prompt = None
+        self._mono = None
 
         if self._mode == "mono":
             provider_name, model = parse_model_spec(config.mono_model)
-            self._mono_provider = providers[provider_name]
-            self._mono_model = model
-            self._mono_prompt = self._build_mono_prompt(config)
+            self._mono = MonoProcessor(
+                providers[provider_name],
+                model,
+                self._build_mono_prompt(config),
+                paste,
+                paste_threshold=config.mono_paste_threshold,
+                context_chars=config.mono_context_chars,
+                temperature=config.mono_temperature,
+                should_skip=self._should_skip_text,
+                log_scores=config.mono_log_scores,
+            )
         else:
             trans = self._resolve_dual_stage(config, "transcription")
             clean = self._resolve_dual_stage(config, "cleanup")
@@ -94,11 +103,12 @@ class Pipeline:
             silence_duration=config.silence_duration,
             min_duration=config.min_chunk_duration,
         )
-        self._executor = ThreadPoolExecutor(max_workers=4)
+        self._executor = ThreadPoolExecutor(max_workers=1 if self._mode == "mono" else 4)
 
         self._futures: list[Future] = []
         self._lock = threading.Lock()
         self._active = False
+        self._processing = False
         self._tap_mode_on = False
 
         if self._mode == "dual":
@@ -148,8 +158,16 @@ class Pipeline:
                 + "."
             )
         prompt += (
-            "\nYou are receiving audio directly. First transcribe it faithfully, then apply "
-            "the cleanup and formatting rules above to that transcription in the same response."
+            "\n\nMONO MODE OUTPUT CONTRACT (this supersedes any instruction above about "
+            "returning only plain text): you are receiving one audio chunk plus, sometimes, "
+            "a short text excerpt from an unfinished previous chunk. Transcribe and clean ONLY "
+            "the current audio; never repeat the previous context. Also estimate a "
+            "completion_score from 0 to 1 for whether the combined unfinished context plus the "
+            "current chunk now form a self-contained semantic thought that can safely be pasted "
+            "without hearing the next chunk. Give low scores to clearly open syntax or meaning "
+            "(for example endings like 'because', 'that', 'and', or an unfinished list), and high "
+            "scores only when the thought is genuinely complete. The score is an operational "
+            "confidence ranking, not a calibrated probability. Be conservative near ambiguity."
         )
         return prompt
 
@@ -166,6 +184,8 @@ class Pipeline:
 
     def on_hotkey_press(self) -> None:
         """Called on hotkey press. Tap: toggles start/stop. Hold: starts."""
+        if self._processing:
+            return
         if self._tap_mode_on:
             self._stop_recording()
         else:
@@ -183,6 +203,10 @@ class Pipeline:
             self._tap_mode_on = True
 
     def _start_recording(self) -> None:
+        if self._processing:
+            return
+        if self._mode == "mono":
+            self._mono.reset()
         self._active = True
         self._on_state("recording")
         self._recorder.start(self._handle_frame)
@@ -191,6 +215,7 @@ class Pipeline:
         if not self._active:
             return
         self._active = False
+        self._processing = True
         self._tap_mode_on = False
         self._recorder.stop()
         self._on_state("processing")
@@ -211,12 +236,7 @@ class Pipeline:
 
     def _dispatch_chunk(self, wav_bytes: bytes) -> None:
         if self._mode == "mono":
-            future = self._executor.submit(
-                self._mono_provider.process_audio,
-                wav_bytes,
-                self._mono_model,
-                self._mono_prompt,
-            )
+            future = self._executor.submit(self._mono.process, wav_bytes)
         else:
             future = self._executor.submit(self._transcriber.transcribe, wav_bytes)
         with self._lock:
@@ -228,7 +248,15 @@ class Pipeline:
                 futures, self._futures = list(self._futures), []
 
             if not futures:
-                self._on_state("idle")
+                return
+
+            if self._mode == "mono":
+                for future in futures:
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"[not-wisprflow] Mono AI processing chunk failed: {exc}")
+                self._mono.flush()
                 return
 
             future_to_index = {future: idx for idx, future in enumerate(futures)}
@@ -240,8 +268,7 @@ class Pipeline:
                 idx = future_to_index[future]
                 try:
                     completed[idx] = future.result()
-                except Exception as exc:
-                    print(f"[not-wisprflow] AI processing chunk failed: {exc}")
+                except Exception:
                     completed[idx] = ""
 
                 while next_index in completed:
@@ -253,10 +280,6 @@ class Pipeline:
 
             merged = " ".join(part for part in outputs if part)
             if not merged or self._should_skip_text(merged):
-                return
-
-            if self._mode == "mono":
-                paste(merged)
                 return
 
             try:
@@ -274,6 +297,7 @@ class Pipeline:
         except Exception as exc:
             print(f"[not-wisprflow] Error during transcription/paste: {exc}")
         finally:
+            self._processing = False
             self._on_state("idle")
 
     def shutdown(self) -> None:
