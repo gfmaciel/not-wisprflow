@@ -37,6 +37,18 @@ def parse_model_spec(spec: str, default_provider: Optional[str] = None) -> tuple
     )
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true/false, got: {raw!r}")
+
+
 @dataclass
 class Config:
     groq_api_key: Optional[str] = None
@@ -55,6 +67,10 @@ class Config:
     gemini_api_key: Optional[str] = None
     processing_mode: str = "dual"
     mono_model: str = "openai:gpt-audio-mini"
+    mono_paste_threshold: float = 0.90
+    mono_context_chars: int = 500
+    mono_temperature: float = 0.0
+    mono_log_scores: bool = False
 
     @classmethod
     def from_env(cls) -> Config:
@@ -77,6 +93,17 @@ class Config:
         transcription_model = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
         cleanup_model = os.getenv("CLEANUP_MODEL", "openai/gpt-oss-20b")
         mono_model = os.getenv("MONO_MODEL", "openai:gpt-audio-mini")
+        mono_paste_threshold = float(os.getenv("MONO_PASTE_THRESHOLD", "0.90"))
+        mono_context_chars = int(os.getenv("MONO_CONTEXT_CHARS", "500"))
+        mono_temperature = float(os.getenv("MONO_TEMPERATURE", "0.0"))
+        mono_log_scores = _env_bool("MONO_LOG_SCORES", False)
+
+        if not 0.0 <= mono_paste_threshold <= 1.0:
+            raise ValueError("MONO_PASTE_THRESHOLD must be between 0 and 1")
+        if mono_context_chars < 0:
+            raise ValueError("MONO_CONTEXT_CHARS must be >= 0")
+        if not 0.0 <= mono_temperature <= 2.0:
+            raise ValueError("MONO_TEMPERATURE must be between 0 and 2")
 
         keys = {
             "groq": groq_api_key,
@@ -95,7 +122,6 @@ class Config:
                     f"{mono_provider.upper()}_API_KEY is required by MONO_MODEL={mono_model!r}"
                 )
         else:
-            # Explicit provider:model settings are authoritative and must have their key.
             for label, spec in (
                 ("TRANSCRIPTION_MODEL", transcription_model),
                 ("CLEANUP_MODEL", cleanup_model),
@@ -115,7 +141,6 @@ class Config:
                     or lower.startswith(("gpt-", "o1", "o3", "o4"))
                 )
 
-            # Any raw stage keeps the previous PRIMARY_PROVIDER + OpenAI/Groq fallback behavior.
             legacy_needed = not _explicit(transcription_model) or not _explicit(cleanup_model)
             if legacy_needed:
                 if not groq_api_key and not openai_api_key:
@@ -157,6 +182,10 @@ class Config:
             gemini_api_key=gemini_api_key,
             processing_mode=mode,
             mono_model=mono_model,
+            mono_paste_threshold=mono_paste_threshold,
+            mono_context_chars=mono_context_chars,
+            mono_temperature=mono_temperature,
+            mono_log_scores=mono_log_scores,
         )
 
     @property
