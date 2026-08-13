@@ -4,22 +4,25 @@ Lightweight Windows dictation tool. Press a hotkey, speak, and cleaned text past
 
 ## How it works
 
-not-wisprflow now has two processing modes:
+not-wisprflow has two processing modes:
 
 ### Dual mode
 
 1. **Record** — mic audio at 16 kHz captured in 30ms frames
 2. **Chunk** — webrtcvad silence detection flushes speech segments mid-recording
-3. **Transcribe** — each chunk is sent to the configured transcription model
+3. **Transcribe** — chunks are sent to the configured transcription model in parallel
 4. **Clean up** — the merged transcript is sent to the configured cleanup model
 5. **Paste** — cleanup tokens are typed at the active cursor as they stream in
 
 ### Mono mode
 
 1. **Record + chunk** — same local audio pipeline
-2. **Process audio** — each WAV chunk is sent directly to one audio-capable OpenAI or Gemini model
-3. **Transcribe + clean in one inference** — the same model returns the final cleaned transcript
-4. **Paste** — cleaned chunks are reassembled in order and pasted
+2. **Process in order** — each WAV chunk is sent directly to one audio-capable OpenAI or Gemini model; calls are sequential so unfinished text can become context for the next chunk, but they begin as soon as chunks close while the user is still speaking
+3. **Transcribe + clean + score** — the model returns cleaned text for the current chunk plus a `completion_score` from 0 to 1 indicating whether the combined thought is semantically complete
+4. **Paste incrementally** — if the score is at or above `MONO_PASTE_THRESHOLD`, the buffered thought is pasted immediately; otherwise the text is held and a short trailing excerpt is supplied to the next chunk as context
+5. **Flush on stop** — any remaining low-confidence text is pasted when recording ends so speech is never discarded merely because the final thought looks incomplete
+
+The context sent back to the model is only a trailing excerpt (`MONO_CONTEXT_CHARS`); the full unresolved text stays local. The model is explicitly instructed to transcribe only the current audio chunk and not repeat previous context.
 
 Mono mode removes the separate transcription-to-cleanup API hop. Dual mode remains available when dedicated speech-to-text plus a separate cleanup model gives better quality, latency, or cost for your setup.
 
@@ -78,13 +81,15 @@ PROCESSING_MODE=dual
 TRANSCRIPTION_MODEL=gemini:gemini-3.6-flash
 CLEANUP_MODEL=openai:gpt-5-mini
 
-# One OpenAI audio model does transcription + cleanup
+# One OpenAI audio model does transcription + cleanup + semantic completion scoring
 PROCESSING_MODE=mono
 MONO_MODEL=openai:gpt-audio-mini
+MONO_PASTE_THRESHOLD=0.90
 
-# One Gemini model does transcription + cleanup
+# One Gemini model does the same
 PROCESSING_MODE=mono
 MONO_MODEL=gemini:gemini-3.6-flash
+MONO_PASTE_THRESHOLD=0.90
 ```
 
 Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|openai`, including the existing OpenAI/Groq fallback behavior.
@@ -97,6 +102,10 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 | `TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Dual-mode transcription model. Prefer `provider:model` |
 | `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Dual-mode cleanup model. Prefer `provider:model` |
 | `MONO_MODEL` | `openai:gpt-audio-mini` | Audio-capable OpenAI/Gemini model used in mono mode |
+| `MONO_PASTE_THRESHOLD` | `0.90` | Paste immediately when the model's semantic completion score reaches this value |
+| `MONO_CONTEXT_CHARS` | `500` | Max trailing characters of unresolved text sent as context with the next chunk |
+| `MONO_TEMPERATURE` | `0.0` | Sampling temperature for mono transcription/cleanup/scoring |
+| `MONO_LOG_SCORES` | `false` | Log score, threshold, paste decision, and buffer size for calibration |
 | `GROQ_API_KEY` | optional | Required when a selected stage uses Groq |
 | `OPENAI_API_KEY` | optional | Required when a selected stage uses OpenAI |
 | `GEMINI_API_KEY` | optional | Required when a selected stage uses Gemini |
@@ -109,14 +118,16 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 | `SILENCE_DURATION` | `2.0` | Seconds of silence before flushing a chunk |
 | `MIN_CHUNK_DURATION` | `3.0` | Minimum chunk length in seconds |
 
+`completion_score` is intentionally treated as an operational ranking rather than a calibrated probability. Enable `MONO_LOG_SCORES=true` while testing and adjust `MONO_PASTE_THRESHOLD` from observed false-early-paste vs. unnecessary-wait tradeoffs.
+
 ## Provider behavior
 
 - **OpenAI transcription:** uses the Audio Transcriptions endpoint.
 - **OpenAI cleanup:** uses Chat Completions with text input.
-- **OpenAI mono:** sends base64 WAV as `input_audio` to an audio-capable chat model.
+- **OpenAI mono:** sends base64 WAV as `input_audio`. Because `gpt-audio`/`gpt-audio-mini` support function calling but not Structured Outputs, mono forces an `emit_transcript_result` function call carrying `text` + `completion_score`.
 - **Gemini transcription:** sends inline WAV audio plus a transcription instruction.
 - **Gemini cleanup:** sends text with the cleanup system instruction and supports streaming.
-- **Gemini mono:** sends inline WAV audio and asks the same model to transcribe and apply cleanup rules.
+- **Gemini mono:** sends inline WAV audio and uses Gemini structured JSON output for `text` + `completion_score`.
 - **Groq:** remains supported for dual-mode transcription and cleanup, including the existing OpenAI/Groq legacy fallback.
 
 ## Tests
