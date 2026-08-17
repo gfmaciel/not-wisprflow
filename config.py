@@ -71,6 +71,7 @@ class Config:
     mono_context_chars: int = 500
     mono_temperature: float = 0.0
     mono_log_scores: bool = False
+    safe_paste_target: bool = True
 
     @classmethod
     def from_env(cls) -> Config:
@@ -97,6 +98,7 @@ class Config:
         mono_context_chars = int(os.getenv("MONO_CONTEXT_CHARS", "500"))
         mono_temperature = float(os.getenv("MONO_TEMPERATURE", "0.0"))
         mono_log_scores = _env_bool("MONO_LOG_SCORES", False)
+        safe_paste_target = _env_bool("SAFE_PASTE_TARGET", True)
 
         if not 0.0 <= mono_paste_threshold <= 1.0:
             raise ValueError("MONO_PASTE_THRESHOLD must be between 0 and 1")
@@ -186,6 +188,7 @@ class Config:
             mono_context_chars=mono_context_chars,
             mono_temperature=mono_temperature,
             mono_log_scores=mono_log_scores,
+            safe_paste_target=safe_paste_target,
         )
 
     @property
