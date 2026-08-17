@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+import sys
 
 import pytest
 
@@ -38,20 +38,37 @@ class FakeFocusProvider:
         return self.current
 
 
+class OutputHarness:
+    def __init__(self):
+        self.clipboard = ""
+        self.copy_calls: list[str] = []
+        self.pasted: list[str] = []
+        self.typed: list[str] = []
+        self.recovery: list[bool] = []
+        self.after_copy = None
+
+    def copy(self, text: str) -> None:
+        self.clipboard = text
+        self.copy_calls.append(text)
+        if self.after_copy:
+            callback, self.after_copy = self.after_copy, None
+            callback()
+
+    def hotkey(self) -> None:
+        self.pasted.append(self.clipboard)
+
+
 def make_guard(provider=None):
     provider = provider or FakeFocusProvider()
-    pasted: list[str] = []
-    typed: list[str] = []
-    clipboard: list[str] = []
-    recovery: list[bool] = []
+    output = OutputHarness()
     guard = PasteTargetGuard(
         provider,
-        pasted.append,
-        typed.append,
-        clipboard.append,
-        on_recovery=lambda: recovery.append(True),
+        clipboard_fn=output.copy,
+        paste_hotkey_fn=output.hotkey,
+        type_fn=output.typed.append,
+        on_recovery=lambda: output.recovery.append(True),
     )
-    return guard, provider, pasted, typed, clipboard, recovery
+    return guard, provider, output
 
 
 def test_focus_match_requires_same_runtime_id_not_just_same_window():
@@ -61,30 +78,40 @@ def test_focus_match_requires_same_runtime_id_not_just_same_window():
     assert not A.matches(None)
 
 
+def test_focus_match_rejects_conflicting_top_level_identity():
+    moved = FocusIdentity(
+        runtime_id=A.runtime_id,
+        process_id=A.process_id,
+        top_level_runtime_id=(99,),
+        top_level_handle=999,
+    )
+    assert not A.matches(moved)
+
+
 def test_matching_target_pastes_immediately():
-    guard, _, pasted, _, clipboard, _ = make_guard()
+    guard, _, output = make_guard()
     assert guard.begin()
 
     assert guard.submit("hello ") is True
 
-    assert pasted == ["hello "]
-    assert clipboard == []
+    assert output.pasted == ["hello "]
     assert guard.buffered_text == ""
 
 
 def test_other_control_in_same_browser_window_buffers_instead_of_pasting():
-    guard, provider, pasted, _, _, _ = make_guard()
+    guard, provider, output = make_guard()
     assert guard.begin()
     provider.current = B_SAME_BROWSER_WINDOW
 
     assert guard.submit("do not mispaste ") is False
 
-    assert pasted == []
+    assert output.pasted == []
+    assert output.copy_calls == []
     assert guard.buffered_text == "do not mispaste "
 
 
 def test_returning_to_original_target_flushes_buffer_in_order():
-    guard, provider, pasted, _, _, _ = make_guard()
+    guard, provider, output = make_guard()
     guard.begin()
     provider.current = C_OTHER_APP
     guard.submit("first ")
@@ -93,27 +120,38 @@ def test_returning_to_original_target_flushes_buffer_in_order():
     provider.current = A
     assert guard.submit("third ") is True
 
-    assert pasted == ["first second third "]
+    assert output.pasted == ["first second third "]
     assert guard.buffered_text == ""
 
 
-def test_finish_while_away_copies_only_pending_text_without_keystrokes():
-    guard, provider, pasted, typed, clipboard, recovery = make_guard()
+def test_focus_change_during_clipboard_prep_does_not_send_ctrl_v():
+    guard, provider, output = make_guard()
+    guard.begin()
+    output.after_copy = lambda: setattr(provider, "current", C_OTHER_APP)
+
+    assert guard.submit("race-safe") is False
+
+    assert output.pasted == []
+    assert guard.buffered_text == "race-safe"
+
+
+def test_finish_while_away_copies_pending_text_without_keystrokes():
+    guard, provider, output = make_guard()
     guard.begin()
     provider.current = C_OTHER_APP
     guard.submit("pending text")
 
     assert guard.finish() is False
 
-    assert pasted == []
-    assert typed == []
-    assert clipboard == ["pending text"]
-    assert recovery == [True]
+    assert output.pasted == []
+    assert output.typed == []
+    assert output.clipboard == "pending text"
+    assert output.recovery == [True]
     assert not guard.active
 
 
 def test_finish_after_return_pastes_pending_text():
-    guard, provider, pasted, _, clipboard, _ = make_guard()
+    guard, provider, output = make_guard()
     guard.begin()
     provider.current = C_OTHER_APP
     guard.submit("pending")
@@ -121,38 +159,38 @@ def test_finish_after_return_pastes_pending_text():
 
     assert guard.finish() is True
 
-    assert pasted == ["pending"]
-    assert clipboard == []
+    assert output.pasted == ["pending"]
+    assert output.recovery == []
     assert not guard.active
 
 
 def test_capture_failure_is_fail_closed_and_recovers_to_clipboard():
     provider = FakeFocusProvider(None)
-    guard, _, pasted, typed, clipboard, _ = make_guard(provider)
+    guard, _, output = make_guard(provider)
 
     assert guard.begin() is False
     guard.submit("safe")
     guard.finish()
 
-    assert pasted == []
-    assert typed == []
-    assert clipboard == ["safe"]
+    assert output.pasted == []
+    assert output.typed == []
+    assert output.clipboard == "safe"
 
 
 def test_runtime_focus_error_is_fail_closed():
-    guard, provider, pasted, _, clipboard, _ = make_guard()
+    guard, provider, output = make_guard()
     guard.begin()
     provider.raise_error = True
 
     guard.submit("safe")
     guard.finish()
 
-    assert pasted == []
-    assert clipboard == ["safe"]
+    assert output.pasted == []
+    assert output.clipboard == "safe"
 
 
 def test_stream_types_while_focused_then_buffers_after_focus_change():
-    guard, provider, pasted, typed, clipboard, _ = make_guard()
+    guard, provider, output = make_guard()
     guard.begin()
 
     def deltas():
@@ -165,13 +203,13 @@ def test_stream_types_while_focused_then_buffers_after_focus_change():
     guard.finish()
 
     assert handled == "hello world"
-    assert typed == ["hello "]
-    assert pasted == []
-    assert clipboard == ["world"]
+    assert output.typed == ["hello "]
+    assert output.pasted == []
+    assert output.clipboard == "world"
 
 
 def test_stream_flushes_away_buffer_when_original_target_returns():
-    guard, provider, pasted, typed, clipboard, _ = make_guard()
+    guard, provider, output = make_guard()
     guard.begin()
 
     def deltas():
@@ -185,13 +223,12 @@ def test_stream_flushes_away_buffer_when_original_target_returns():
     guard.finish()
 
     assert handled == "buffered returned!"
-    assert pasted == ["buffered returned"]
-    assert typed == ["!"]
-    assert clipboard == []
+    assert output.pasted == ["buffered returned"]
+    assert output.typed == ["!"]
 
 
 def test_stream_propagates_error_before_any_output():
-    guard, _, _, _, _, _ = make_guard()
+    guard, _, _ = make_guard()
     guard.begin()
 
     def broken():
@@ -203,7 +240,7 @@ def test_stream_propagates_error_before_any_output():
 
 
 def test_stream_swallows_error_after_handled_output(capsys):
-    guard, _, _, typed, _, _ = make_guard()
+    guard, _, output = make_guard()
     guard.begin()
 
     def partial():
@@ -211,7 +248,7 @@ def test_stream_swallows_error_after_handled_output(capsys):
         raise RuntimeError("connection reset")
 
     assert guard.stream(partial()) == "hello"
-    assert typed == ["hello"]
+    assert output.typed == ["hello"]
     assert "truncated" in capsys.readouterr().out.lower()
 
 
@@ -281,3 +318,11 @@ def test_windows_provider_rejects_password_field():
     provider = WindowsUIAFocusProvider(FakeAuto(control))
 
     assert provider.capture() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows UI Automation smoke test")
+def test_installed_uiautomation_exposes_required_api():
+    import uiautomation as auto
+
+    assert callable(auto.GetFocusedControl)
+    assert callable(auto.UIAutomationInitializerInThread)
