@@ -6,8 +6,12 @@ import keyboard
 from paste_target import PasteTargetGuard, WindowsUIAFocusProvider
 
 
+def _paste_hotkey() -> None:
+    keyboard.press_and_release("ctrl+v")
+
+
 def _paste_now(text: str) -> None:
-    """Write text to clipboard and paste it at the currently active cursor."""
+    """Legacy unguarded active-cursor paste used when safety is disabled."""
     pyperclip.copy(text)
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
@@ -18,7 +22,7 @@ def _paste_now(text: str) -> None:
             pass
         time.sleep(0.005)
 
-    keyboard.press_and_release("ctrl+v")
+    _paste_hotkey()
 
 
 def _type_now(text: str) -> None:
@@ -34,15 +38,15 @@ def _recovery_notice() -> None:
 
 _guard = PasteTargetGuard(
     WindowsUIAFocusProvider(),
-    _paste_now,
-    _type_now,
-    pyperclip.copy,
+    clipboard_fn=pyperclip.copy,
+    paste_hotkey_fn=_paste_hotkey,
+    type_fn=_type_now,
     on_recovery=_recovery_notice,
 )
 
 
 def start_paste_session(*, enabled: bool = True) -> bool:
-    """Capture the current focused field as the destination for this recording.
+    """Capture the focused field as the destination for this recording.
 
     Returns True when a strong UI Automation target was captured. When the
     feature is disabled, the legacy active-cursor behavior is retained.
