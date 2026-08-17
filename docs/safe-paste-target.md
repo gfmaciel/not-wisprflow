@@ -1,59 +1,210 @@
 # Safe Paste Target / Focus Guard
 
-Status: proposed design for implementation
+Status: implemented behind `SAFE_PASTE_TARGET` (default: `true`)
 
-## Problem
+## Why this exists
 
-`not-wisprflow` currently pastes or types into whichever control owns keyboard focus at the moment output becomes available.
+`not-wisprflow` can paste mono-mode thoughts before recording stops. That is useful for latency, but raw `Ctrl+V` / `keyboard.write()` targets whichever control owns keyboard focus at that instant.
 
-That is correct for the simple case, but unsafe for a common dictation workflow:
+A common workflow is:
 
 1. Start dictating in a text field.
-2. Keep recording while switching to other tabs/windows to read information.
-3. Mono mode decides that an intermediate thought is complete and attempts an early paste.
-4. The active cursor now belongs to another tab/window, so text may be inserted in the wrong place.
-5. The user later returns to the original text field and stops recording.
+2. Keep recording while switching tabs/windows to read information.
+3. Return to the original field.
+4. Stop recording and continue working there.
 
-The feature must preserve low-latency early paste without ever intentionally typing into a destination that cannot be identified as the original target.
+Without a focus guard, an early mono paste could land in the tab or application being used only for reading.
 
-## Safety invariant
+## Safety policy
 
-> If target identity is uncertain, buffer the text. Never paste on uncertainty.
+> If the original target cannot be strongly verified, buffer output. Never intentionally paste on uncertainty.
 
-The application must never steal focus or activate a window just to paste.
+The application does not steal focus, activate windows, click fields, or infer a new destination.
 
-## Goals
+There is one unavoidable platform limitation: synthetic keyboard input is not atomic with focus state. The implementation rechecks focus immediately before sending `Ctrl+V` (including a second check after clipboard preparation), but Windows cannot provide a universal transaction that locks an arbitrary Chrome/contenteditable/VS Code field to a synthetic key event. The remaining check-to-key interval is therefore extremely small but not mathematically zero. The manual acceptance matrix below remains important.
 
-- Capture the intended paste target when recording begins.
-- Allow incremental mono-mode paste only while that target is still focused.
-- Buffer completed text while the user reads another tab/window.
-- Flush the buffered text, in order, after the user returns to the original target.
-- Apply the same safety rule to final clipboard paste and dual-mode streaming output.
-- Fail safely if UI Automation cannot identify the control.
-- Avoid storing/logging field contents, labels, document text, or other sensitive UI text.
+## Current architecture
 
-## Non-goals
+### `paste_target.py`
 
-- Do not bring the original application to the foreground automatically.
-- Do not click or refocus the original field automatically.
-- Do not attempt DOM/browser-extension integration.
-- Do not use screen coordinates as target identity.
-- Do not silently fall back to "same browser window = same field" when UI Automation cannot distinguish controls.
+Owns target identity, Windows UI Automation capture, buffering, and routing policy.
 
-## Platform approach
+#### `FocusIdentity`
 
-Use Microsoft UI Automation (UIA) to inspect the currently focused control. UIA exposes `GetFocusedElement`, and a UIA element exposes a runtime identifier that can be used as a strong identity signal while that element exists.
+Stores only technical identity metadata:
 
-Implementation should isolate platform code behind a small adapter so the rest of the pipeline does not know about COM/UIA details.
+- UI Automation runtime ID;
+- process ID;
+- optional top-level runtime ID;
+- optional top-level HWND;
+- control type/class/automation/framework identifiers for technical diagnostics.
 
-Recommended Python wrapper for v1: `uiautomation==2.0.29`.
+It does **not** capture UIA `Name`, `Value`, visible text, selected text, document title, URL, or field contents.
 
-Why:
+A strong match requires:
 
-- It is a thin Python wrapper around Microsoft UI Automation.
-- It supports Windows 10/11 and documents support for Chrome and other UIA providers.
-- It exposes the underlying `IUIAutomationElement`, so the implementation can use native UIA identity when needed.
-- Keeping it behind an adapter makes replacement possible later without changing pipeline logic.
+- non-empty runtime IDs;
+- valid/equal process IDs;
+- exact focused-element runtime ID equality;
+- top-level runtime ID equality when both sides provide it;
+- top-level HWND equality when both sides provide it.
+
+A matching browser HWND alone is never sufficient. A different field/tab inside the same browser window therefore fails closed when UI Automation exposes it as a different focused element.
+
+#### `WindowsUIAFocusProvider`
+
+Uses `uiautomation==2.0.29` as a wrapper over Microsoft UI Automation.
+
+Every focus capture runs inside `UIAutomationInitializerInThread()` because paste work can execute from different worker/collector threads. The code stores immutable identity data rather than passing live UI Automation controls across threads.
+
+Capture returns `None` on:
+
+- UI Automation error;
+- no focused control;
+- a control that does not report keyboard focus;
+- a password field;
+- missing runtime ID;
+- invalid process ID.
+
+`None` is a safe state: output buffers instead of falling back to active-cursor paste.
+
+#### `PasteTargetGuard`
+
+Owns the pending-output buffer for the recording session.
+
+Its state is intentionally small:
+
+```text
+IDLE
+  |
+  | begin recording
+  v
+ARMED(original target)
+  |
+  | output + target strongly matches
+  +-------------------------------> paste/type
+  |
+  | output + mismatch/unknown
+  v
+BUFFERING(original target, pending text)
+  |
+  | next output or stop after return
+  +-------------------------------> flush pending in order
+  |
+  | stop while still away/unknown
+  v
+RECOVERY(copy pending text only; no keystroke)
+```
+
+The guard is protected by an `RLock` because recording start, mono processing, and final collection can occur on different threads.
+
+## Paste hardening
+
+A guarded clipboard paste is deliberately split into two operations rather than reusing the legacy `paste()` primitive as one opaque action:
+
+1. Verify that the original UIA target is focused.
+2. Prepare the clipboard.
+3. Verify the original UIA target **again**.
+4. Only then send `Ctrl+V`.
+
+If focus changes during clipboard preparation, step 3 fails and `Ctrl+V` is not sent. The text remains buffered/recoverable.
+
+For streaming keyboard writes, target identity is checked before each delta. If focus changes, subsequent deltas are buffered. As with all synthetic keyboard input, a focus change during the physical emission of one delta cannot be made universally atomic across applications; keeping deltas small limits that residual window.
+
+## `paste_text.py`
+
+The old low-level behavior remains available for the escape hatch:
+
+- `_paste_now()` -> clipboard + `Ctrl+V` at active cursor;
+- `_type_now()` -> `keyboard.write()`.
+
+When a guarded session is active:
+
+- `paste()` routes through `PasteTargetGuard.submit()`;
+- `paste_stream()` routes through `PasteTargetGuard.stream()`.
+
+When safe paste is disabled, these functions preserve the legacy active-cursor behavior.
+
+At recovery, the app logs only that pending text was copied to the clipboard; the pending text itself is not logged.
+
+## Pipeline lifecycle
+
+### Recording start
+
+`Pipeline._start_recording()` calls:
+
+```python
+start_paste_session(enabled=config.safe_paste_target)
+```
+
+**before** the `recording` state callback and before starting the recorder. This ordering prevents the app's own visual state transition from accidentally becoming the captured destination.
+
+If recorder startup fails, the paste session is immediately finished/reset and `_active` is cleared.
+
+### Recording end / collection
+
+`Pipeline._collect_and_paste()` always calls `finish_paste_session()` in its outer `finally` block, including paths with no futures or processing errors.
+
+If pending guarded text exists:
+
+- original target focused -> paste it there;
+- target different/unknown -> copy pending text to clipboard and send no keyboard event.
+
+The pipeline then returns to `idle` normally.
+
+## Mono behavior
+
+`MonoProcessor` remains platform-agnostic. It still calls the injected `paste()` callback whenever `completion_score >= MONO_PASTE_THRESHOLD`.
+
+The guard changes what happens underneath:
+
+```text
+complete thought + original field focused
+    -> paste immediately
+
+complete thought + user reading elsewhere
+    -> append to guard buffer
+
+user returns + another output arrives
+    -> flush old buffer + new output in order
+
+user returns + presses stop
+    -> mono flush + guard finish -> paste pending output
+
+user stops while still elsewhere
+    -> pending output to clipboard only; no Ctrl+V
+```
+
+Once a mono thought is handed to the guard, the guard owns any unpasted copy. This prevents `MonoProcessor` from duplicating text later.
+
+## Dual behavior
+
+Dual mode still consumes cleanup output through `paste_stream()` after recording stops.
+
+While the original target remains focused, deltas type normally. If focus becomes different/unknown, the guard stops issuing new writes and buffers later deltas. When a safe target is available on a later delta, the buffered remainder is flushed in order. On terminal recovery, pending text goes to clipboard only.
+
+The existing stream-error contract is preserved:
+
+- error before any delta is handled -> propagate so the caller can use its existing fallback;
+- error after output has been typed **or buffered** -> do not re-paste the full result, avoiding duplication.
+
+## Configuration
+
+```env
+SAFE_PASTE_TARGET=true
+```
+
+Default is `true`.
+
+Set `SAFE_PASTE_TARGET=false` only to restore the previous behavior where output goes to whichever cursor is active at paste time. This is an escape hatch, not the recommended mode.
+
+## Dependencies
+
+The Windows focus adapter uses:
+
+```text
+uiautomation==2.0.29
+```
 
 References:
 
@@ -62,245 +213,64 @@ References:
 - Python UIAutomation for Windows: https://github.com/yinkaisheng/Python-UIAutomation-for-Windows
 - PyPI release: https://pypi.org/project/uiautomation/2.0.29/
 
-## Architecture
-
-Introduce two pieces:
-
-### 1. `FocusTracker`
-
-Windows-specific, read-only UI inspection.
-
-Suggested interface:
-
-```python
-@dataclass(frozen=True)
-class FocusTarget:
-    process_id: int
-    top_level_hwnd: int
-    runtime_id: tuple[int, ...] | None
-    automation_id: str
-    control_type: int
-    class_name: str
-
-class FocusTracker:
-    def capture(self) -> FocusTarget | None: ...
-    def is_same_target(self, target: FocusTarget) -> bool: ...
-```
-
-Important privacy rule: do **not** include UIA `Name`, `Value`, visible text, selected text, document title, or field contents in the fingerprint or logs.
-
-### 2. `PasteTargetGuard`
-
-Platform-independent routing and buffering.
-
-Suggested interface:
-
-```python
-class PasteTargetGuard:
-    def arm(self) -> None: ...
-    def paste(self, text: str) -> bool: ...
-    def paste_stream(self, deltas: Iterable[str]) -> str: ...
-    def flush_if_safe(self) -> bool: ...
-    def reset(self) -> None: ...
-```
-
-`PasteTargetGuard` owns the pending output buffer. It receives an ordinary paste function and a focus tracker through dependency injection so unit tests do not require a real desktop.
-
-## Target fingerprint and matching
-
-### Strong match
-
-Treat the target as the same when all available strong identifiers agree:
-
-- same process ID;
-- same top-level HWND;
-- same UIA runtime ID.
-
-### Degraded capture
-
-If UIA cannot provide a runtime ID but top-level window identity is available, do **not** permit incremental paste based on HWND alone. A browser can contain multiple tabs and multiple editable fields inside one HWND.
-
-In degraded mode:
-
-- buffer all incremental output;
-- at stop, paste only if a fresh UIA target can be proven equivalent;
-- otherwise leave the output recoverable through the clipboard and never send keystrokes automatically.
-
-### Element replacement
-
-Some web applications replace an editable element during a React/UI rerender. A new runtime ID must be considered a different/unknown target in v1, even if other metadata looks similar.
-
-This is intentionally conservative. A later version may add a carefully tested stable ancestor fingerprint, but false negatives are preferable to text appearing in the wrong application or field.
-
-## Session state machine
-
-```text
-IDLE
-  |
-  | recording starts
-  v
-ARMED(target)
-  |
-  | output ready + target focused
-  +------------------------------> paste immediately
-  |
-  | output ready + other/unknown target
-  v
-BUFFERING(target, pending_text)
-  |
-  | next output or stop + original target focused
-  +------------------------------> flush pending in order -> ARMED
-  |
-  | stop + target still wrong/unknown
-  v
-RECOVERY(pending_text in clipboard, no keystrokes)
-```
-
-No background focus stealing is needed.
-
-For the user's normal workflow, they return to the original field before pressing the stop hotkey. The stop path performs a target check and flushes the accumulated buffer there.
-
-## Mono-mode integration
-
-Current mono mode calls `paste()` as soon as `completion_score >= paste_threshold`.
-
-Replace the raw paste callback passed to `MonoProcessor` with `PasteTargetGuard.paste`.
-
-Desired behavior:
-
-```text
-phrase complete + target focused -> paste now
-phrase complete + reading elsewhere -> append to guard buffer
-next phrase complete after returning -> flush old buffer + paste new phrase
-stop after returning -> flush old buffer + mono pending text
-```
-
-The `MonoProcessor` should remain unaware of Windows focus details.
-
-## Dual-mode integration
-
-Dual mode currently uses `paste_stream()` after recording stops.
-
-Streaming needs a slightly stronger rule because focus can change while tokens/deltas are arriving:
-
-1. Before each write, verify target identity.
-2. If focus changes, stop issuing keyboard events immediately.
-3. Continue consuming the model stream into the guard buffer without typing.
-4. When the target is safe again, paste the buffered remainder.
-
-This prevents a stream that started correctly from continuing into a different application after Alt+Tab.
-
-## Start/stop behavior
-
-### Recording start
-
-`Pipeline._start_recording()`:
-
-1. Reset prior guard state.
-2. Capture target.
-3. Start recorder.
-
-Target capture should happen immediately before recording begins so the focused field is the field the user intended to dictate into.
-
-### Recording stop
-
-`Pipeline._stop_recording()` / collection path:
-
-- Never assume the current cursor is safe.
-- Flush through `PasteTargetGuard`, not directly through `paste()`.
-- If the target cannot be proven, do not send `Ctrl+V` or `keyboard.write()`.
-- Put recoverable pending text in the clipboard and expose a visible/log state such as `paste_pending` without including the text itself.
-
-## Failure handling
-
-### UIA throws / target disappears
-
-Microsoft documents that `GetFocusedElement` can fail when an element disappears between lookup and use. Treat all such errors as `unknown`, buffer, and continue recording.
-
-### Browser does not expose a usable UIA child element
-
-Disable incremental paste for that recording session. Do not weaken matching to top-level window identity.
-
-### User closes the original tab/window
-
-The target can no longer match. Preserve pending text in clipboard; do not activate another window.
-
-### User intentionally wants to change destinations mid-recording
-
-Not part of v1. A future explicit "retarget" command could re-arm the guard, but target changes must never be inferred automatically.
-
-## Configuration and rollout
-
-Add:
-
-```env
-SAFE_PASTE_TARGET=true
-```
-
-Recommended rollout:
-
-1. Ship behind the flag, default `true` in development/manual testing.
-2. Validate Windows behavior in common targets.
-3. Make it the production default after the manual acceptance matrix passes.
-4. Keep `SAFE_PASTE_TARGET=false` temporarily as an escape hatch while the implementation matures.
-
-If disabled, preserve existing behavior exactly.
-
-## Unit tests
-
-`FocusTracker` should be represented by a fake in most tests.
-
-Minimum test set:
-
-1. Capture target when recording starts.
-2. Same target -> incremental text pastes immediately.
-3. Different top-level window -> text buffers, no keystroke call.
-4. Different UIA runtime ID inside same browser HWND -> text buffers.
-5. Return to target -> buffered phrases flush once, in original order.
-6. Several away-target phrases coalesce without duplication.
-7. Stop while back on target -> pending text flushes.
-8. Stop while away -> no keystrokes; pending text copied for recovery.
-9. UIA lookup exception -> buffer, never paste.
-10. Original element disappears -> buffer/recovery path.
-11. Streaming output changes focus mid-stream -> subsequent deltas are buffered, not typed elsewhere.
-12. Guard reset between recordings -> no stale target or stale text.
-13. No UI `Name`/`Value`/text is included in diagnostic output.
+## Automated test coverage
+
+The repository includes focused tests for:
+
+- exact target matching;
+- different control/runtime ID in the same browser window;
+- different application;
+- conflicting top-level identity;
+- ordered buffer flush after returning;
+- stop while away -> clipboard only / zero paste hotkeys;
+- stop after returning -> pending paste;
+- UI Automation capture failure;
+- runtime UI Automation exception;
+- password-field rejection;
+- focus change **during clipboard preparation** -> second check blocks `Ctrl+V`;
+- streaming focus changes and ordered recovery;
+- stream failure before/after partial output;
+- safe-paste configuration default and escape hatch;
+- pipeline lifecycle (capture ordering, rollout flag, recorder-start failure cleanup, terminal cleanup);
+- real `uiautomation` thread-initializer smoke test on Windows CI.
+
+The normal CI matrix installs all dependencies, runs `pip check`, compiles Python syntax, and runs the full pytest suite on Windows with Python 3.10 and 3.13.
 
 ## Manual Windows acceptance matrix
 
-Test at least:
+Automated CI cannot reproduce a human switching real interactive browser tabs at arbitrary instants. Before removing the escape hatch, manually exercise at least:
 
-- Chrome: same ChatGPT text box, switch to another tab, return, stop.
-- Chrome: switch between two editable fields in the same tab.
-- Edge: same scenarios.
-- Notepad: switch to browser and return.
-- VS Code editor: switch to browser and return.
-- Close original tab while recording.
-- Change focus exactly while an early paste becomes ready.
-- Change focus during dual-mode streaming.
+- Chrome: ChatGPT/editor field -> another tab -> original field -> stop;
+- Chrome: two editable fields in the same tab;
+- Edge: equivalent tab/field cases;
+- Notepad -> browser -> Notepad;
+- VS Code editor -> browser -> VS Code;
+- close the original tab while recording;
+- change focus as an early mono paste becomes ready;
+- change focus during dual streaming.
 
-For every case, the hard acceptance criterion is: **zero text appears outside the originally armed target**.
+Hard acceptance criterion: **no text should appear outside the originally armed destination**. A conservative false negative (clipboard recovery instead of paste) is acceptable; a wrong-destination paste is not.
 
-## Expected code changes
+## Files changed for this feature
 
-Likely scope:
-
-- new `focus_tracker.py` (Windows/UIA adapter);
-- new `paste_guard.py` (state + buffer + safety policy);
-- update `pipeline.py` to arm/reset/flush guard and route all output through it;
-- small update to `paste_text.py` so raw keyboard operations remain low-level primitives;
-- update `config.py`, `.env.example`, and `requirements.txt`;
-- new focused unit tests plus existing CI;
-- optional tray/UI state for `paste_pending`.
-
-This is a medium-sized feature with a narrow blast radius. The AI/transcription architecture does not need to change.
+- `paste_target.py` — focus identity, UIA adapter, guard/buffer policy;
+- `paste_text.py` — guarded routing + retained legacy primitives;
+- `pipeline.py` — session lifecycle integration;
+- `config.py` / `.env.example` — rollout flag;
+- `requirements.txt` — UI Automation dependency;
+- `tests/test_paste_target.py` — guard/provider behavior;
+- `tests/test_safe_paste_config.py` — configuration;
+- `tests/test_safe_paste_pipeline.py` — lifecycle integration;
+- `tests/test_uiautomation_windows_smoke.py` — real Windows package/thread initialization.
 
 ## Definition of done
 
-- No raw paste/write path in `Pipeline` or `MonoProcessor` can bypass the guard when `SAFE_PASTE_TARGET=true`.
-- Incremental paste still feels immediate while the original field is focused.
-- Switching tabs/windows never causes text to be inserted into the newly focused destination.
-- Returning to the original field preserves output order and avoids duplication.
-- Failure to identify focus always degrades toward buffering/recovery, never toward an unsafe paste.
-- Full CI remains green on supported Python versions.
-- Manual Windows acceptance matrix passes before removing the escape hatch.
+For the implemented v1:
+
+- no pipeline/mono output bypasses the guard while `SAFE_PASTE_TARGET=true`;
+- target uncertainty degrades to buffering/recovery, never a window-only guess;
+- buffer order is preserved without duplication;
+- stop-away recovery emits no keyboard event;
+- failure paths do not leave the pipeline stuck in processing state;
+- Windows CI is green on supported Python versions;
+- the manual matrix above remains the final validation for real interactive browser behavior before the escape hatch is ever removed.
