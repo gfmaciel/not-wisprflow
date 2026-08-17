@@ -10,7 +10,7 @@ from chunker import Chunker
 from transcriber import Transcriber
 from cleanup import CleanupProcessor
 from mono_processor import MonoProcessor
-from paste_text import paste, paste_stream
+from paste_text import finish_paste_session, paste, paste_stream, start_paste_session
 from providers import GeminiProvider, GroqProvider, OpenAIProvider
 
 _SPURIOUS_TRANSCRIPTS = {
@@ -51,6 +51,7 @@ class Pipeline:
         self._on_state = on_state or (lambda _: None)
         self._on_spectrum = on_spectrum or (lambda _: None)
         self._mode = config.processing_mode
+        self._safe_paste_target = config.safe_paste_target
 
         providers = {}
         if config.groq_api_key:
@@ -205,11 +206,22 @@ class Pipeline:
     def _start_recording(self) -> None:
         if self._processing:
             return
+
+        # Capture the destination before any state/UI callback has a chance to
+        # affect focus. If capture is uncertain, the guard deliberately stays
+        # active with no target so output is buffered/recovered, never mispasted.
+        start_paste_session(enabled=self._safe_paste_target)
+
         if self._mode == "mono":
             self._mono.reset()
         self._active = True
         self._on_state("recording")
-        self._recorder.start(self._handle_frame)
+        try:
+            self._recorder.start(self._handle_frame)
+        except Exception:
+            self._active = False
+            finish_paste_session()
+            raise
 
     def _stop_recording(self) -> None:
         if not self._active:
@@ -297,6 +309,10 @@ class Pipeline:
         except Exception as exc:
             print(f"[not-wisprflow] Error during transcription/paste: {exc}")
         finally:
+            # This is the only terminal recovery point. If focus is still the
+            # original target, pending guarded text is pasted there. Otherwise
+            # it goes to clipboard only and no keystrokes are emitted.
+            finish_paste_session()
             self._processing = False
             self._on_state("idle")
 
