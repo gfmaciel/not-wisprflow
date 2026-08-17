@@ -25,13 +25,29 @@ class FocusIdentity:
     framework_id: str = ""
 
     def matches(self, other: Optional[FocusIdentity]) -> bool:
-        return bool(
-            other
-            and self.runtime_id
-            and other.runtime_id
-            and self.process_id == other.process_id
-            and self.runtime_id == other.runtime_id
-        )
+        if (
+            other is None
+            or not self.runtime_id
+            or not other.runtime_id
+            or self.process_id <= 0
+            or other.process_id <= 0
+            or self.process_id != other.process_id
+            or self.runtime_id != other.runtime_id
+        ):
+            return False
+        if (
+            self.top_level_runtime_id
+            and other.top_level_runtime_id
+            and self.top_level_runtime_id != other.top_level_runtime_id
+        ):
+            return False
+        if (
+            self.top_level_handle
+            and other.top_level_handle
+            and self.top_level_handle != other.top_level_handle
+        ):
+            return False
+        return True
 
 
 class FocusProvider(Protocol):
@@ -68,7 +84,8 @@ class WindowsUIAFocusProvider:
                     return None
 
                 runtime_id = tuple(int(value) for value in (control.GetRuntimeId() or ()))
-                if not runtime_id:
+                process_id = int(control.ProcessId or 0)
+                if not runtime_id or process_id <= 0:
                     return None
 
                 top_runtime_id: tuple[int, ...] = ()
@@ -81,13 +98,13 @@ class WindowsUIAFocusProvider:
                         )
                         top_handle = int(top.NativeWindowHandle or 0)
                 except Exception:
-                    # Top-level metadata is diagnostic only; never weaken the
-                    # strong focused-element match if it is unavailable.
+                    # Top-level metadata is additional evidence only. Missing
+                    # metadata never permits a weaker window-only match.
                     pass
 
                 return FocusIdentity(
                     runtime_id=runtime_id,
-                    process_id=int(control.ProcessId or 0),
+                    process_id=process_id,
                     top_level_runtime_id=top_runtime_id,
                     top_level_handle=top_handle,
                     control_type=str(control.ControlTypeName or ""),
@@ -102,31 +119,26 @@ class WindowsUIAFocusProvider:
 
 
 class PasteTargetGuard:
-    """Route text only to the focused element captured at session start.
+    """Route output only to the UI element captured at recording start.
 
-    The guard is deliberately fail-closed:
-    - strong target match -> paste/type now;
-    - mismatch or UI Automation uncertainty -> buffer;
-    - finish while away -> copy only the unpasted buffer to the clipboard and
-      send no keystrokes.
-
-    The class is thread-safe because recording starts, mono processing, and
-    final collection can happen on different threads.
+    The guard is fail-closed and thread-safe. Clipboard paste is split into
+    prepare + hotkey phases so focus can be checked a second time after the
+    clipboard is ready, immediately before Ctrl+V is emitted.
     """
 
     def __init__(
         self,
         focus_provider: FocusProvider,
-        paste_fn: Callable[[str], None],
-        type_fn: Callable[[str], None],
-        clipboard_fn: Callable[[str], None],
         *,
+        clipboard_fn: Callable[[str], None],
+        paste_hotkey_fn: Callable[[], None],
+        type_fn: Callable[[str], None],
         on_recovery: Optional[Callable[[], None]] = None,
     ) -> None:
         self._focus_provider = focus_provider
-        self._paste_fn = paste_fn
-        self._type_fn = type_fn
         self._clipboard_fn = clipboard_fn
+        self._paste_hotkey_fn = paste_hotkey_fn
+        self._type_fn = type_fn
         self._on_recovery = on_recovery or (lambda: None)
         self._lock = threading.RLock()
         self._target: Optional[FocusIdentity] = None
@@ -149,7 +161,7 @@ class PasteTargetGuard:
             return self._target
 
     def begin(self) -> bool:
-        """Start a guarded paste session and capture the current target."""
+        """Start a guarded session and capture the current focused element."""
         with self._lock:
             self._buffer = ""
             self._target = self._safe_capture()
@@ -175,39 +187,61 @@ class PasteTargetGuard:
             return False
         return target.matches(self._safe_capture())
 
-    def submit(self, text: str) -> bool:
-        """Paste a complete text fragment now or buffer it for the target.
+    def _paste_to_verified_target(self, text: str) -> bool:
+        """Paste only if focus matches both before and after clipboard prep."""
+        if not self._target_is_focused():
+            return False
+        try:
+            self._clipboard_fn(text)
+        except Exception:
+            return False
+        # Clipboard preparation is not atomic with Ctrl+V. Recheck focus after
+        # it so an Alt+Tab during that gap never intentionally receives a paste.
+        if not self._target_is_focused():
+            return False
+        try:
+            self._paste_hotkey_fn()
+            return True
+        except Exception:
+            return False
 
-        Returns True only when the fragment (and any older buffered text) was
-        sent to the captured target during this call.
-        """
+    def _type_to_verified_target(self, text: str) -> bool:
+        if not self._target_is_focused():
+            return False
+        try:
+            self._type_fn(text)
+            return True
+        except Exception:
+            return False
+
+    def submit(self, text: str) -> bool:
+        """Paste a complete fragment now, or buffer it on any uncertainty."""
         if not text:
             return False
 
         with self._lock:
             if not self._active:
-                self._paste_fn(text)
-                return True
-
-            if not self._target_is_focused():
-                self._buffer += text
-                return False
+                try:
+                    self._clipboard_fn(text)
+                    self._paste_hotkey_fn()
+                    return True
+                except Exception:
+                    return False
 
             combined = self._buffer + text
-            self._buffer = ""
-            try:
-                self._paste_fn(combined)
+            if self._paste_to_verified_target(combined):
+                self._buffer = ""
                 return True
-            except Exception:
-                self._buffer = combined + self._buffer
-                return False
+
+            self._buffer = combined
+            return False
 
     def stream(self, deltas: Iterable[str]) -> str:
-        """Safely route streaming deltas while preserving legacy semantics.
+        """Safely route streaming deltas while preserving fallback semantics.
 
         A stream error before any delta propagates so the caller can fall back.
-        Once any output has been handled (typed or buffered), later stream
-        errors are swallowed to prevent duplicate fallback text.
+        Once any output has been handled (typed or buffered), later errors are
+        swallowed to avoid duplicate fallback output.
         """
         iterator = iter(deltas)
         handled: list[str] = []
@@ -227,57 +261,45 @@ class PasteTargetGuard:
 
             with self._lock:
                 if not self._active:
-                    self._type_fn(delta)
-                elif not self._target_is_focused():
-                    self._buffer += delta
-                elif self._buffer:
-                    combined = self._buffer + delta
-                    self._buffer = ""
-                    try:
-                        self._paste_fn(combined)
-                    except Exception:
-                        self._buffer = combined + self._buffer
-                else:
                     try:
                         self._type_fn(delta)
                     except Exception:
-                        self._buffer += delta
+                        pass
+                elif self._buffer:
+                    combined = self._buffer + delta
+                    if self._paste_to_verified_target(combined):
+                        self._buffer = ""
+                    else:
+                        self._buffer = combined
+                elif not self._type_to_verified_target(delta):
+                    self._buffer += delta
 
             handled.append(delta)
 
         return "".join(handled)
 
     def finish(self) -> bool:
-        """Finish the session, safely delivering or recovering pending text.
-
-        Returns True when buffered text was pasted into the original target.
-        If the target is not strongly focused, pending text is copied to the
-        clipboard without any keyboard input and False is returned.
-        """
+        """Deliver pending text to the target or recover it to clipboard only."""
         with self._lock:
             if not self._active:
                 return False
 
             pending = self._buffer
-            self._buffer = ""
-            pasted = False
             try:
                 if not pending:
                     return False
 
-                if self._target_is_focused():
-                    try:
-                        self._paste_fn(pending)
-                        pasted = True
-                        return True
-                    except Exception:
-                        pass
+                if self._paste_to_verified_target(pending):
+                    self._buffer = ""
+                    return True
 
+                # `_paste_to_verified_target` may already have prepared the
+                # clipboard before detecting a focus change. Copy once more so
+                # recovery is deterministic, but never emit a key here.
                 self._clipboard_fn(pending)
                 self._on_recovery()
                 return False
             finally:
                 self._target = None
+                self._buffer = ""
                 self._active = False
-                if pasted:
-                    self._buffer = ""
