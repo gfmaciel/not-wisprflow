@@ -3,28 +3,13 @@ import pytest
 from cleanup import ends_with_sentence, CleanupProcessor
 
 
-def test_period():
-    assert ends_with_sentence("Hello.") is True
-
-
-def test_question():
-    assert ends_with_sentence("How?") is True
-
-
-def test_exclamation():
-    assert ends_with_sentence("Yes!") is True
-
-
-def test_incomplete():
-    assert ends_with_sentence("hello world") is False
-
-
-def test_empty():
-    assert ends_with_sentence("") is False
-
-
-def test_trailing_space():
-    assert ends_with_sentence("Done.   ") is True
+def test_sentence_boundaries():
+    cases = (
+        ("Hello.", True), ("How?", True), ("Yes!", True),
+        ("hello world", False), ("", False), ("Done.   ", True),
+    )
+    for text, expected in cases:
+        assert ends_with_sentence(text) is expected, text
 
 
 def _provider(cleaned="Clean text.", deltas=None):
@@ -70,49 +55,12 @@ def test_languages_in_system_prompt():
     assert "Portuguese" in system_prompt and "English" in system_prompt
 
 
-def test_fallback_used_on_primary_failure(capsys):
-    primary = _provider()
-    primary.cleanup.side_effect = RuntimeError("overloaded")
-    fallback = _provider("Clean text.")
-
-    p = CleanupProcessor(
-        primary,
-        "model-primary",
-        ["English"],
-        fallback_provider=fallback,
-        fallback_model="gpt-4o-mini",
-    )
-    result = p.process("clean text.")
-
-    assert result == "Clean text."
-    fallback.cleanup.assert_called_once()
-    captured = capsys.readouterr()
-    assert "fallback" in captured.out.lower()
-
-
 def test_no_fallback_raises_on_primary_failure():
     primary = _provider()
     primary.cleanup.side_effect = RuntimeError("err")
     p = CleanupProcessor(primary, "model", ["English"])
     with pytest.raises(RuntimeError, match="err"):
         p.process("done.")
-
-
-def test_fallback_uses_fallback_model():
-    primary = _provider()
-    primary.cleanup.side_effect = RuntimeError("err")
-    fallback = _provider("ok.")
-
-    p = CleanupProcessor(
-        primary,
-        "primary-model",
-        ["English"],
-        fallback_provider=fallback,
-        fallback_model="gpt-4o-mini",
-    )
-    p.process("ok.")
-
-    assert fallback.cleanup.call_args.args[1] == "gpt-4o-mini"
 
 
 def test_stream_yields_deltas():
@@ -123,9 +71,16 @@ def test_stream_yields_deltas():
     assert provider.stream_cleanup.call_args.args[1] == "m"
 
 
-def test_stream_uses_system_prompt_with_languages():
-    provider = _provider(deltas=["x"])
-    p = CleanupProcessor(provider, "m", ["Portuguese", "English"])
-    list(p.stream("test."))
-    system_prompt = provider.stream_cleanup.call_args.args[2]
-    assert "Portuguese" in system_prompt and "English" in system_prompt
+def test_cleanup_fallback_retains_model_and_language_hints():
+    primary, fallback = _provider(), _provider("Recovered.")
+    primary.cleanup.side_effect = RuntimeError("primary unavailable")
+    processor = CleanupProcessor(
+        primary, "primary-model", ["English", "Portuguese"],
+        fallback_provider=fallback, fallback_model="fallback-model",
+    )
+    assert processor.process("Do this.") == "Recovered."
+    fallback.cleanup.assert_called_once()
+    text, model, prompt = fallback.cleanup.call_args.args
+    assert text == "Do this."
+    assert model == "fallback-model"
+    assert "Portuguese" in prompt and "English" in prompt

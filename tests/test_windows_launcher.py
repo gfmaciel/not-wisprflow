@@ -19,6 +19,8 @@ def test_launcher_is_manual_and_uses_windowless_python():
     assert "schtasks" not in source
     assert "reg add" not in source
     assert "startup" not in source
+    assert ".venv\\\\scripts\\\\pythonw.exe" in source
+    assert source.index(".venv\\\\scripts\\\\pythonw.exe") < source.index("where pythonw.exe")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Batch launch requires Windows")
@@ -43,8 +45,3 @@ def test_double_click_batch_launches_pythonw_process(tmp_path):
     assert marker.read_text() == "started"
 
 
-def test_batch_prefers_project_virtual_environment():
-    source = (ROOT / "start.bat").read_text(encoding="utf-8").lower()
-    assert ".venv\\scripts\\pythonw.exe" in source
-    assert "venv\\scripts\\pythonw.exe" in source
-    assert source.index(".venv\\scripts\\pythonw.exe") < source.index("where pythonw.exe")

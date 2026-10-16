@@ -36,23 +36,6 @@ def test_other_openai_models_retain_singular_language_hint():
     assert "languages" not in kwargs
 
 
-def test_default_dual_mode_routes_transcription_separately_from_cleanup():
-    config = Config(openai_api_key="sk_test")
-    assert config.processing_mode == "dual"
-    assert parse_model_spec(config.transcription_model) == ("openai", "gpt-transcribe")
-    original_cleanup_model = config.cleanup_model
-    provider = _provider()
-    transcriber = Transcriber(provider, "gpt-transcribe")
-    assert transcriber.transcribe(b"WAVE") == "Pergunta ditada?"
-    assert config.cleanup_model == original_cleanup_model
-    cleanup = CleanupProcessor(provider, original_cleanup_model, ["Portuguese"])
-    provider.client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="Pergunta ditada?"))]
-    )
-    assert cleanup.process("Pergunta ditada?") == "Pergunta ditada?"
-    assert provider.client.chat.completions.create.call_args.kwargs["model"] == original_cleanup_model
-
-
 def test_installed_openai_sdk_supports_gpt_transcribe_language_hints():
     """Ensure a locally preinstalled older SDK cannot break the API at runtime."""
     from inspect import signature

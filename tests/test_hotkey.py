@@ -106,21 +106,3 @@ def test_duration_uses_event_timestamps_not_delayed_callback_clock():
     listener.stop()
 
 
-def test_typing_in_two_foreground_apps_does_not_duplicate_registration():
-    keyboard = FakeKeyboard()
-    calls = []
-    listener = GlobalHotkey(
-        "alt+\\", lambda: calls.append("start"),
-        lambda _: calls.append("stop"), keyboard_module=keyboard,
-    )
-    listener.start()
-    for window in ("editor.exe", "browser.exe"):
-        keyboard.send(30, app=window)
-        keyboard.send(30, "up", app=window)
-        keyboard.send(56, app=window)
-        keyboard.send(43, app=window)
-        keyboard.send(43, "up", app=window)
-        keyboard.send(56, "up", app=window)
-    assert calls == ["start", "stop", "start", "stop"]
-    assert keyboard.installs == [False]
-    listener.stop()

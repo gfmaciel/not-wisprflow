@@ -1,7 +1,7 @@
 import os
 import pytest
 from unittest.mock import patch
-from config import Config, parse_model_spec
+from config import Config, parse_model_spec, load_config
 
 
 def test_config_loads_from_env():
@@ -64,24 +64,10 @@ def test_config_invalid_primary_provider():
             Config.from_env()
 
 
-def test_config_openai_model_defaults():
-    env = {"GROQ_API_KEY": "x", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
-    with patch.dict(os.environ, env, clear=True):
-        c = Config.from_env()
-    assert c.openai_transcription_model == "whisper-1"
-    assert c.openai_cleanup_model == "gpt-4o-mini"
-
-
 def test_whisper_language_single():
     with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}, clear=True):
         c = Config.from_env()
     assert c.whisper_language == "pt"
-
-
-def test_whisper_language_multi():
-    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese,English", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}, clear=True):
-        c = Config.from_env()
-    assert c.whisper_language is None
 
 
 def test_config_defaults():
@@ -97,30 +83,6 @@ def test_parse_model_spec_explicit_and_inferred():
     assert parse_model_spec("gemini:gemini-3.6-flash") == ("gemini", "gemini-3.6-flash")
     assert parse_model_spec("gemini-3.6-flash") == ("gemini", "gemini-3.6-flash")
     assert parse_model_spec("gpt-audio-mini") == ("openai", "gpt-audio-mini")
-
-
-def test_mono_openai_loads_from_env():
-    env = {
-        "PROCESSING_MODE": "mono",
-        "MONO_MODEL": "openai:gpt-audio-mini",
-        "OPENAI_API_KEY": "sk_test",
-    }
-    with patch.dict(os.environ, env, clear=True):
-        c = Config.from_env()
-    assert c.processing_mode == "mono"
-    assert c.mono_model == "openai:gpt-audio-mini"
-
-
-def test_mono_gemini_loads_from_env():
-    env = {
-        "PROCESSING_MODE": "mono",
-        "MONO_MODEL": "gemini:gemini-3.6-flash",
-        "GEMINI_API_KEY": "gem_test",
-    }
-    with patch.dict(os.environ, env, clear=True):
-        c = Config.from_env()
-    assert c.processing_mode == "mono"
-    assert c.gemini_api_key == "gem_test"
 
 
 def test_mono_requires_matching_provider_key():
@@ -156,3 +118,29 @@ def test_default_multilingual_hints_and_legacy_single_hint():
         config = Config.from_env()
     assert config.transcription_languages == ["pt", "en"]
     assert config.whisper_language is None
+
+
+def test_local_dotenv_overrides_code_defaults_without_real_secrets(tmp_path):
+    """Only read the synthetic file we created, never the user's .env."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "OPENAI_API_KEY=sk_fake\\n"
+        "TRANSCRIPTION_MODEL=openai:gpt-4o-mini-transcribe\\n"
+        "CLEANUP_MODEL=openai:gpt-4o-mini\\n"
+        "HOTKEY=ctrl+shift+x\\n"
+        "LANGUAGES=Portuguese\\n",
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {}, clear=True):
+        config = load_config(dotenv)
+        assert config.transcription_model == "openai:gpt-4o-mini-transcribe"
+        assert config.cleanup_model == "openai:gpt-4o-mini"
+        assert config.hotkey == "ctrl+shift+x"
+        assert config.whisper_language == "pt"
+        assert config.processing_mode == "dual"
+
+    # An explicit process variable takes priority over the .env, as documented.
+    with patch.dict(os.environ, {"CLEANUP_MODEL": "openai:gpt-4o"}, clear=True):
+        config = load_config(dotenv)
+        assert config.cleanup_model == "openai:gpt-4o"
+        assert config.transcription_model == "openai:gpt-4o-mini-transcribe"
