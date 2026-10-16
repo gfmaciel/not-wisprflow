@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication
 
 from config import Config
@@ -18,6 +19,8 @@ def main() -> None:
         return
 
     try:
+        # Read local configuration only when launching the app, never in tests.
+        load_dotenv()
         config = Config.from_env()
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)

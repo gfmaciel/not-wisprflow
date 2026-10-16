@@ -2,10 +2,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Optional
-from dotenv import load_dotenv
 from cleanup import _SYS_BASE, with_cleanup_policy
 
-load_dotenv()
 
 _LANG_CODES = {
     "portuguese": "pt", "english": "en", "spanish": "es",
