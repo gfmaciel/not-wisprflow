@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 from cleanup import _SYS_BASE, with_cleanup_policy
@@ -184,8 +185,23 @@ class Config:
         if len(self.languages) == 1:
             return _LANG_CODES.get(self.languages[0].lower())
         return None
+
     @property
     def transcription_languages(self) -> list[str]:
         """Known language hints for gpt-transcribe (which supports multiple languages)."""
         codes = (_LANG_CODES.get(value.lower()) for value in self.languages)
         return list(dict.fromkeys(code for code in codes if code))
+
+
+
+def load_config(dotenv_path: str | Path | None = None) -> Config:
+    """Load this app's .env before applying Config's code defaults.
+
+    Shell environment values remain higher priority than .env (python-dotenv's
+    default). An explicit path makes tests independent of any personal .env.
+    """
+    from dotenv import load_dotenv
+
+    path = Path(dotenv_path) if dotenv_path is not None else Path(__file__).resolve().with_name(".env")
+    load_dotenv(dotenv_path=path, override=False)
+    return Config.from_env()

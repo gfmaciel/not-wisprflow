@@ -145,3 +145,16 @@ If an existing local configuration explicitly sets an old `TRANSCRIPTION_MODEL`,
 The transcription step passes configured language hints (`Portuguese,English` becomes `["pt", "en"]`) to `gpt-transcribe`, using the multi-language `languages` parameter.
 
 If using a project virtual environment, `start.bat` looks for `.venv\\Scripts\\pythonw.exe` or `venv\\Scripts\\pythonw.exe` first. It still starts only on demand. An initial brief command-shell flash can occur when Windows opens a `.bat`; the Python app itself does not keep a terminal open. Startup errors are appended to `not-wisprflow.log`.
+
+
+## Configuration precedence and test CI
+
+At startup, `main.py` loads **the `.env` next to `config.py`**, regardless of the current working directory. Configuration priority is:
+
+1. Explicit process environment variables
+2. Values in the local `.env`
+3. Hardcoded defaults in `Config.from_env()`
+
+For example, `TRANSCRIPTION_MODEL` and `CLEANUP_MODEL` set in `.env` replace the corresponding defaults. The configured cleanup model is never silently changed. Tests only use temporary, synthetic `.env` files; they never read your local secrets.
+
+The Windows CI checks Python 3.13 on pull requests that touch Python source, tests, dependencies, the batch launcher, or the CI workflow. Documentation-only PRs skip CI. Merging an already-tested PR does **not** trigger a second run. Use `workflow_dispatch` for a manual run, including when checking a direct commit to `main`. Note: if this check becomes a required branch-protection check, GitHub path filtering can leave documentation-only PRs pending; adjust branch rules or change the trigger policy accordingly.

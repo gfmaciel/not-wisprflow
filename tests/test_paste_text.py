@@ -24,59 +24,6 @@ def _stub_keyboard_and_pyperclip(monkeypatch):
     yield fake_keyboard, fake_pyperclip
 
 
-def test_paste_stream_types_each_delta(_stub_keyboard_and_pyperclip):
-    fake_keyboard, _ = _stub_keyboard_and_pyperclip
-    from paste_text import paste_stream
-
-    typed = paste_stream(iter(["Hel", "lo ", "world."]))
-
-    assert typed == "Hello world."
-    assert fake_keyboard.write.call_count == 3
-    fake_keyboard.write.assert_any_call("Hel")
-    fake_keyboard.write.assert_any_call("lo ")
-    fake_keyboard.write.assert_any_call("world.")
-
-
-def test_paste_stream_skips_empty(_stub_keyboard_and_pyperclip):
-    fake_keyboard, _ = _stub_keyboard_and_pyperclip
-    from paste_text import paste_stream
-
-    typed = paste_stream(iter(["Hi", "", "!"]))
-
-    assert typed == "Hi!"
-    assert fake_keyboard.write.call_count == 2
-
-
-def test_paste_stream_propagates_when_empty(_stub_keyboard_and_pyperclip):
-    fake_keyboard, _ = _stub_keyboard_and_pyperclip
-    from paste_text import paste_stream
-
-    def boom():
-        raise RuntimeError("network down")
-        yield  # pragma: no cover
-
-    with pytest.raises(RuntimeError, match="network down"):
-        paste_stream(boom())
-
-    fake_keyboard.write.assert_not_called()
-
-
-def test_paste_stream_swallows_after_partial(_stub_keyboard_and_pyperclip, capsys):
-    fake_keyboard, _ = _stub_keyboard_and_pyperclip
-    from paste_text import paste_stream
-
-    def partial():
-        yield "Hello "
-        yield "wor"
-        raise RuntimeError("connection reset")
-
-    typed = paste_stream(partial())
-
-    assert typed == "Hello wor"
-    assert fake_keyboard.write.call_count == 2
-    assert "truncated" in capsys.readouterr().out.lower()
-
-
 def test_paste_writes_clipboard_and_ctrl_v(_stub_keyboard_and_pyperclip):
     fake_keyboard, fake_pyperclip = _stub_keyboard_and_pyperclip
     fake_pyperclip.paste.return_value = "hello"

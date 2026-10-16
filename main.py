@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import sys
 
-from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication
 
-from config import Config
+from config import load_config
 from hotkey import GlobalHotkey
 from pipeline import Pipeline
 from single_instance import SingleInstance
@@ -19,9 +18,8 @@ def main() -> None:
         return
 
     try:
-        # Read local configuration only when launching the app, never in tests.
-        load_dotenv()
-        config = Config.from_env()
+        # Read the adjacent .env on launch; it overrides hardcoded defaults.
+        config = load_config()
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)
         bar = StatusBar()
