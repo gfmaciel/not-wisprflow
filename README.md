@@ -100,7 +100,7 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 | `TRANSCRIPTION_MODEL` | `openai:gpt-transcribe` | Dual-mode transcription model. Prefer `provider:model` |
 | `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Dual-mode cleanup model. Prefer `provider:model` |
 | `MONO_MODEL` | `openai:gpt-audio-mini` | Audio-capable OpenAI/Gemini model used in mono mode |
-| `MONO_PASTE_THRESHOLD` | `0.90` | Paste immediately when the model's semantic completion score reaches this value |
+| `MONO_PASTE_THRESHOLD` | `0.90` | Marks a thought complete when its score reaches this value; paste occurs after processing |
 | `MONO_CONTEXT_CHARS` | `500` | Max trailing characters of unresolved text sent as context with the next chunk |
 | `MONO_TEMPERATURE` | `0.0` | Sampling temperature for mono transcription/cleanup/scoring |
 | `MONO_LOG_SCORES` | `false` | Log score, threshold, paste decision, and buffer size for calibration |
@@ -116,7 +116,7 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 | `SILENCE_DURATION` | `2.0` | Seconds of silence before flushing a chunk |
 | `MIN_CHUNK_DURATION` | `3.0` | Minimum chunk length in seconds |
 
-`completion_score` is intentionally treated as an operational ranking rather than a calibrated probability. Enable `MONO_LOG_SCORES=true` while testing and adjust `MONO_PASTE_THRESHOLD` from observed false-early-paste vs. unnecessary-wait tradeoffs.
+`completion_score` is intentionally treated as an operational ranking rather than a calibrated probability. Enable `MONO_LOG_SCORES=true` while testing and adjust `MONO_PASTE_THRESHOLD` based on observed premature thought boundaries versus overlong context buffers.
 
 ## Provider behavior
 
