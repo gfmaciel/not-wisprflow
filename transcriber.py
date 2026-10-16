@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Sequence
 
 
 class Transcriber:
@@ -9,7 +9,7 @@ class Transcriber:
         self,
         provider,
         model: str,
-        language: Optional[str] = None,
+        language: Optional[str | Sequence[str]] = None,
         *,
         fallback_provider=None,
         fallback_model: Optional[str] = None,

@@ -139,25 +139,18 @@ class Config:
                     or lower.startswith(("gpt-", "o1", "o3", "o4"))
                 )
 
-            legacy_needed = not _explicit(transcription_model) or not _explicit(cleanup_model)
-            if legacy_needed:
-                if not groq_api_key and not openai_api_key:
-                    raise ValueError(
-                        "No API key configured for a legacy dual-mode stage. Set GROQ_API_KEY "
-                        "and/or OPENAI_API_KEY, or use provider:model for that stage."
-                    )
-                if primary == "groq" and not groq_api_key:
-                    print(
-                        "[not-wisprflow] WARNING: GROQ_API_KEY not set; "
-                        "switching to OpenAI as primary provider."
-                    )
-                    primary = "openai"
-                elif primary == "openai" and not openai_api_key:
-                    print(
-                        "[not-wisprflow] WARNING: OPENAI_API_KEY not set; "
-                        "switching to Groq as primary provider."
-                    )
-                    primary = "groq"
+            # Never silently substitute a different cleanup model merely because
+            # the API key for its configured provider is absent.
+            if not _explicit(cleanup_model) and not keys[primary]:
+                raise ValueError(
+                    f"{primary.upper()}_API_KEY is required by CLEANUP_MODEL={cleanup_model!r}. "
+                    "The cleanup model will not be changed automatically."
+                )
+            if not _explicit(transcription_model) and not keys[primary]:
+                raise ValueError(
+                    f"{primary.upper()}_API_KEY is required by TRANSCRIPTION_MODEL="
+                    f"{transcription_model!r}. Select the intended provider explicitly."
+                )
 
         return cls(
             groq_api_key=groq_api_key,
@@ -191,3 +184,8 @@ class Config:
         if len(self.languages) == 1:
             return _LANG_CODES.get(self.languages[0].lower())
         return None
+    @property
+    def transcription_languages(self) -> list[str]:
+        """Known language hints for gpt-transcribe (which supports multiple languages)."""
+        codes = (_LANG_CODES.get(value.lower()) for value in self.languages)
+        return list(dict.fromkeys(code for code in codes if code))

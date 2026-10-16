@@ -85,7 +85,11 @@ class Pipeline:
             self._transcriber = Transcriber(
                 trans["provider"],
                 trans["model"],
-                config.whisper_language,
+                (
+                    config.transcription_languages
+                    if trans["model"] == "gpt-transcribe"
+                    else config.whisper_language
+                ),
                 fallback_provider=trans["fallback_provider"],
                 fallback_model=trans["fallback_model"],
             )
@@ -116,6 +120,21 @@ class Pipeline:
             self._executor.submit(self._warmup)
 
     def _resolve_dual_stage(self, config: Config, stage: str) -> dict:
+        if stage == "cleanup":
+            # Preserve the configured cleanup model, including legacy unprefixed
+            # model IDs. Do not switch to OPENAI_CLEANUP_MODEL as a fallback.
+            if _is_explicit_model(config.cleanup_model):
+                provider_name, model = parse_model_spec(
+                    config.cleanup_model, config.primary_provider
+                )
+            else:
+                provider_name, model = config.primary_provider, config.cleanup_model
+            return {
+                "provider": self._providers[provider_name],
+                "model": model,
+                "fallback_provider": None,
+                "fallback_model": None,
+            }
         if stage == "transcription":
             configured = config.transcription_model
             openai_model = config.openai_transcription_model

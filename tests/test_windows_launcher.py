@@ -41,3 +41,10 @@ def test_double_click_batch_launches_pythonw_process(tmp_path):
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
     assert marker.read_text() == "started"
+
+
+def test_batch_prefers_project_virtual_environment():
+    source = (ROOT / "start.bat").read_text(encoding="utf-8").lower()
+    assert ".venv\\scripts\\pythonw.exe" in source
+    assert "venv\\scripts\\pythonw.exe" in source
+    assert source.index(".venv\\scripts\\pythonw.exe") < source.index("where pythonw.exe")

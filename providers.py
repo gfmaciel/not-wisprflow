@@ -4,7 +4,7 @@ import base64
 import io
 import json
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -113,16 +113,23 @@ class OpenAIProvider:
         from openai import OpenAI
         self.client = OpenAI(api_key=api_key)
 
-    def transcribe(self, wav_bytes: bytes, model: str, language: Optional[str] = None) -> str:
+    def transcribe(
+        self, wav_bytes: bytes, model: str,
+        language: Optional[str | Sequence[str]] = None,
+    ) -> str:
         kwargs = {
             "file": ("audio.wav", io.BytesIO(wav_bytes), "audio/wav"),
             "model": model,
         }
         if language:
             if model == "gpt-transcribe":
-                kwargs["languages"] = [language]
+                kwargs["languages"] = (
+                    [language] if isinstance(language, str) else list(language)
+                )
             else:
-                kwargs["language"] = language
+                kwargs["language"] = (
+                    language if isinstance(language, str) else next(iter(language), None)
+                )
         result = self.client.audio.transcriptions.create(**kwargs)
         return result.strip() if isinstance(result, str) else result.text.strip()
 

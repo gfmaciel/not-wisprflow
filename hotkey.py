@@ -35,6 +35,7 @@ class GlobalHotkey:
         self._pressed: set[int] = set()
         self._armed: int | None = None
         self._press_at = 0.0
+        self._press_event_time: float | None = None
         self._hook = None
 
     def start(self) -> None:
@@ -49,6 +50,7 @@ class GlobalHotkey:
                 self._hook = None
             self._pressed.clear()
             self._armed = None
+            self._press_event_time = None
 
     def _handle_event(self, event) -> None:
         action = None
@@ -66,11 +68,19 @@ class GlobalHotkey:
                 ):
                     self._armed = code
                     self._press_at = self._clock()
+                    self._press_event_time = getattr(event, "time", None)
                     action = self._on_press
             elif event.event_type == "up":
                 if self._armed == code:
-                    duration = max(0.0, self._clock() - self._press_at)
+                    event_time = getattr(event, "time", None)
+                    if event_time is not None and self._press_event_time is not None:
+                        # Hardware event timestamps remain accurate even when the
+                        # listener's callback queue is busy opening the microphone.
+                        duration = max(0.0, event_time - self._press_event_time)
+                    else:
+                        duration = max(0.0, self._clock() - self._press_at)
                     self._armed = None
+                    self._press_event_time = None
                     action = self._on_release
                 self._pressed.discard(code)
         if action is self._on_release:
