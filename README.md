@@ -12,15 +12,15 @@ not-wisprflow has two processing modes:
 2. **Chunk** — webrtcvad silence detection flushes speech segments mid-recording
 3. **Transcribe** — chunks are sent to the configured transcription model in parallel
 4. **Clean up** — the merged transcript is sent to the configured cleanup model
-5. **Paste** — cleanup tokens are typed at the active cursor as they stream in
+5. **Paste** — cleaned text is pasted once into whichever field is active when processing finishes
 
 ### Mono mode
 
 1. **Record + chunk** — same local audio pipeline
 2. **Process in order** — each WAV chunk is sent directly to one audio-capable OpenAI or Gemini model; calls are sequential so unfinished text can become context for the next chunk, but they begin as soon as chunks close while the user is still speaking
 3. **Transcribe + clean + score** — the model returns cleaned text for the current chunk plus a `completion_score` from 0 to 1 indicating whether the combined thought is semantically complete
-4. **Paste incrementally** — if the score is at or above `MONO_PASTE_THRESHOLD`, the buffered thought is pasted immediately; otherwise the text is held and a short trailing excerpt is supplied to the next chunk as context
-5. **Flush on stop** — any remaining low-confidence text is pasted when recording ends so speech is never discarded merely because the final thought looks incomplete
+4. **Build output incrementally** — completed thoughts are buffered locally; unfinished text feeds the next chunk as context
+5. **Paste after processing** — all completed and remaining low-confidence text is pasted once to the currently active field
 
 The context sent back to the model is only a trailing excerpt (`MONO_CONTEXT_CHARS`); the full unresolved text stays local. The model is explicitly instructed to transcribe only the current audio chunk and not repeat previous context.
 
@@ -48,9 +48,7 @@ Then edit `.env` and set the required API key(s) and models.
 
 ## Run
 
-```bash
-python main.py
-```
+Double-click `start.bat` on Windows. It launches `pythonw.exe` (or `pyw.exe`) without leaving a console window. No auto-start is installed. If startup fails, see `not-wisprflow.log`. Run `python main.py` from a terminal for interactive debugging.
 
 **Hotkey (default `Alt+\`):**
 - **Tap** — press once to start, press again to stop
@@ -73,7 +71,7 @@ Examples:
 ```env
 # OpenAI transcription + Gemini cleanup
 PROCESSING_MODE=dual
-TRANSCRIPTION_MODEL=openai:gpt-4o-mini-transcribe
+TRANSCRIPTION_MODEL=openai:gpt-transcribe
 CLEANUP_MODEL=gemini:gemini-3.6-flash
 
 # Gemini transcription + OpenAI cleanup
@@ -99,7 +97,7 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PROCESSING_MODE` | `dual` | `dual` = transcription then cleanup; `mono` = one audio model does both |
-| `TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Dual-mode transcription model. Prefer `provider:model` |
+| `TRANSCRIPTION_MODEL` | `openai:gpt-transcribe` | Dual-mode transcription model. Prefer `provider:model` |
 | `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Dual-mode cleanup model. Prefer `provider:model` |
 | `MONO_MODEL` | `openai:gpt-audio-mini` | Audio-capable OpenAI/Gemini model used in mono mode |
 | `MONO_PASTE_THRESHOLD` | `0.90` | Paste immediately when the model's semantic completion score reaches this value |
@@ -122,7 +120,7 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 
 ## Provider behavior
 
-- **OpenAI transcription:** uses the Audio Transcriptions endpoint.
+- **OpenAI transcription:** uses the Audio Transcriptions endpoint (`gpt-transcribe`); single-language hints use `languages`.
 - **OpenAI cleanup:** uses Chat Completions with text input.
 - **OpenAI mono:** sends base64 WAV as `input_audio`. Because `gpt-audio`/`gpt-audio-mini` support function calling but not Structured Outputs, mono forces an `emit_transcript_result` function call carrying `text` + `completion_score`.
 - **Gemini transcription:** sends inline WAV audio plus a transcription instruction.
@@ -135,3 +133,11 @@ Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|opena
 ```bash
 pytest tests/ -v
 ```
+
+## Keyboard and focus
+
+The shortcut uses a single non-suppressing global hook, including when a different app is focused. The keys are not consumed or rewritten; the other app may also interpret the shortcut. A Windows named mutex prevents duplicate running instances.
+
+The recorded result is pasted **once, after processing**, in the field active then, even if focus changed while recording. Mono still processes audio chunks sequentially and returns `text` and `completion_score` internally, but no longer pastes partial chunks early. Keep the target input focused when processing finishes.
+
+If an existing local configuration explicitly sets an old `TRANSCRIPTION_MODEL`, change it to `openai:gpt-transcribe` and provide `OPENAI_API_KEY`. The cleanup model remains whatever `CLEANUP_MODEL` configures.

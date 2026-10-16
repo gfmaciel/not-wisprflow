@@ -10,7 +10,7 @@ from chunker import Chunker
 from transcriber import Transcriber
 from cleanup import CleanupProcessor
 from mono_processor import MonoProcessor
-from paste_text import finish_paste_session, paste, paste_stream, start_paste_session
+from paste_text import paste
 from providers import GeminiProvider, GroqProvider, OpenAIProvider
 
 _SPURIOUS_TRANSCRIPTS = {
@@ -51,7 +51,6 @@ class Pipeline:
         self._on_state = on_state or (lambda _: None)
         self._on_spectrum = on_spectrum or (lambda _: None)
         self._mode = config.processing_mode
-        self._safe_paste_target = config.safe_paste_target
 
         providers = {}
         if config.groq_api_key:
@@ -65,6 +64,7 @@ class Pipeline:
         self._transcriber = None
         self._cleanup = None
         self._mono = None
+        self._mono_paste_buffer: list[str] = []
 
         if self._mode == "mono":
             provider_name, model = parse_model_spec(config.mono_model)
@@ -72,7 +72,7 @@ class Pipeline:
                 providers[provider_name],
                 model,
                 self._build_mono_prompt(config),
-                paste,
+                self._buffer_mono_output,
                 paste_threshold=config.mono_paste_threshold,
                 context_chars=config.mono_context_chars,
                 temperature=config.mono_temperature,
@@ -207,20 +207,16 @@ class Pipeline:
         if self._processing:
             return
 
-        # Capture the destination before any state/UI callback has a chance to
-        # affect focus. If capture is uncertain, the guard deliberately stays
-        # active with no target so output is buffered/recovered, never mispasted.
-        start_paste_session(enabled=self._safe_paste_target)
-
+        # The final paste uses the focused field at completion, not at start.
         if self._mode == "mono":
             self._mono.reset()
+            self._mono_paste_buffer.clear()
         self._active = True
         self._on_state("recording")
         try:
             self._recorder.start(self._handle_frame)
         except Exception:
             self._active = False
-            finish_paste_session()
             raise
 
     def _stop_recording(self) -> None:
@@ -254,6 +250,9 @@ class Pipeline:
         with self._lock:
             self._futures.append(future)
 
+    def _buffer_mono_output(self, text: str) -> None:
+        self._mono_paste_buffer.append(text)
+
     def _collect_and_paste(self) -> None:
         try:
             with self._lock:
@@ -269,6 +268,10 @@ class Pipeline:
                     except Exception as exc:
                         print(f"[not-wisprflow] Mono AI processing chunk failed: {exc}")
                 self._mono.flush()
+                output = "".join(self._mono_paste_buffer)
+                self._mono_paste_buffer.clear()
+                if output:
+                    paste(output)
                 return
 
             future_to_index = {future: idx for idx, future in enumerate(futures)}
@@ -295,8 +298,9 @@ class Pipeline:
                 return
 
             try:
-                typed = paste_stream(self._cleanup.stream(merged))
-                if typed:
+                cleaned = "".join(self._cleanup.stream(merged))
+                if cleaned:
+                    paste(cleaned)
                     return
             except Exception as exc:
                 print(f"[not-wisprflow] Streaming cleanup failed ({exc}); falling back.")
@@ -309,10 +313,6 @@ class Pipeline:
         except Exception as exc:
             print(f"[not-wisprflow] Error during transcription/paste: {exc}")
         finally:
-            # This is the only terminal recovery point. If focus is still the
-            # original target, pending guarded text is pasted there. Otherwise
-            # it goes to clipboard only and no keystrokes are emitted.
-            finish_paste_session()
             self._processing = False
             self._on_state("idle")
 
