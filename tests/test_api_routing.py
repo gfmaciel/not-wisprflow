@@ -51,3 +51,11 @@ def test_default_dual_mode_routes_transcription_separately_from_cleanup():
     )
     assert cleanup.process("Pergunta ditada?") == "Pergunta ditada?"
     assert provider.client.chat.completions.create.call_args.kwargs["model"] == original_cleanup_model
+
+
+def test_installed_openai_sdk_supports_gpt_transcribe_language_hints():
+    """Ensure a locally preinstalled older SDK cannot break the API at runtime."""
+    from inspect import signature
+    from openai.resources.audio.transcriptions import Transcriptions
+
+    assert "languages" in signature(Transcriptions.create).parameters
