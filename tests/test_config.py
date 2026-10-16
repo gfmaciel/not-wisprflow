@@ -26,28 +26,19 @@ def test_config_raises_without_any_api_key():
             Config.from_env()
 
 
-def test_config_groq_primary_missing_key_falls_back_to_openai(capsys):
+def test_cleanup_does_not_switch_models_if_groq_key_is_missing():
     env = {"OPENAI_API_KEY": "sk_test"}
     with patch.dict(os.environ, env, clear=True):
-        c = Config.from_env()
-    assert c.primary_provider == "openai"
-    assert c.openai_api_key == "sk_test"
-    assert c.groq_api_key is None
-    captured = capsys.readouterr()
-    assert "GROQ_API_KEY" in captured.out
-    assert "openai" in captured.out.lower()
+        with pytest.raises(ValueError, match="GROQ_API_KEY.*CLEANUP_MODEL"):
+            Config.from_env()
 
 
-def test_config_openai_primary_missing_key_falls_back_to_groq(capsys):
-    env = {"PRIMARY_PROVIDER": "openai", "GROQ_API_KEY": "gsk_test", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
+def test_config_openai_primary_missing_key_fails_instead_of_switching():
+    env = {"PRIMARY_PROVIDER": "openai", "GROQ_API_KEY": "gsk_test",
+           "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
     with patch.dict(os.environ, env, clear=True):
-        c = Config.from_env()
-    assert c.primary_provider == "groq"
-    assert c.groq_api_key == "gsk_test"
-    assert c.openai_api_key is None
-    captured = capsys.readouterr()
-    assert "OPENAI_API_KEY" in captured.out
-    assert "groq" in captured.out.lower()
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            Config.from_env()
 
 
 def test_config_openai_primary_with_key():
@@ -94,7 +85,7 @@ def test_whisper_language_multi():
 
 
 def test_config_defaults():
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "x"}, clear=True):
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GROQ_API_KEY": "y"}, clear=True):
         c = Config.from_env()
     assert c.transcription_model == "openai:gpt-transcribe"
     assert c.hotkey == "alt+\\"
@@ -155,3 +146,13 @@ def test_dual_can_mix_openai_and_gemini():
         c = Config.from_env()
     assert c.transcription_model.startswith("openai:")
     assert c.cleanup_model.startswith("gemini:")
+
+
+def test_default_multilingual_hints_and_legacy_single_hint():
+    with patch.dict(os.environ, {
+        "OPENAI_API_KEY": "sk_test", "GROQ_API_KEY": "gsk_test",
+        "LANGUAGES": "Portuguese,English,Portuguese"
+    }, clear=True):
+        config = Config.from_env()
+    assert config.transcription_languages == ["pt", "en"]
+    assert config.whisper_language is None

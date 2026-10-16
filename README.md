@@ -140,4 +140,8 @@ The shortcut uses a single non-suppressing global hook, including when a differe
 
 The recorded result is pasted **once, after processing**, in the field active then, even if focus changed while recording. Mono still processes audio chunks sequentially and returns `text` and `completion_score` internally, but no longer pastes partial chunks early. Keep the target input focused when processing finishes.
 
-If an existing local configuration explicitly sets an old `TRANSCRIPTION_MODEL`, change it to `openai:gpt-transcribe` and provide `OPENAI_API_KEY`. The cleanup model remains whatever `CLEANUP_MODEL` configures.
+If an existing local configuration explicitly sets an old `TRANSCRIPTION_MODEL`, change it to `openai:gpt-transcribe` and provide `OPENAI_API_KEY`. The cleanup model remains whatever `CLEANUP_MODEL` configures. The default cleanup model `openai/gpt-oss-20b` is served by Groq, so the default dual-mode combination also requires `GROQ_API_KEY`. A missing cleanup-provider key causes a clear startup error instead of silently switching to a different model.
+
+The transcription step passes configured language hints (`Portuguese,English` becomes `["pt", "en"]`) to `gpt-transcribe`, using the multi-language `languages` parameter.
+
+If using a project virtual environment, `start.bat` looks for `.venv\\Scripts\\pythonw.exe` or `venv\\Scripts\\pythonw.exe` first. It still starts only on demand. An initial brief command-shell flash can occur when Windows opens a `.bat`; the Python app itself does not keep a terminal open. Startup errors are appended to `not-wisprflow.log`.
