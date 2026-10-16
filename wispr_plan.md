@@ -1,3 +1,5 @@
+> **Historical planning document — not the current implementation.** This file records the original Groq/Whisper design and contains old defaults, architecture assumptions, and paste behavior. For current installation, models, configuration, CI, and behavior, see [README.md](README.md). Do not use the settings below as a current setup guide.
+
 # WisprFlow Substitute — Build Plan
 
 ## 1. Goal

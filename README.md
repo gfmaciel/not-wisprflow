@@ -1,160 +1,162 @@
 # not-wisprflow
 
-Lightweight Windows dictation tool. Press a hotkey, speak, and cleaned text pastes wherever your cursor is.
+A lightweight Windows dictation app. Use a global hotkey to record speech, transcribe it with an AI model, clean up the text, and paste the result into the active text field.
 
-## How it works
-
-not-wisprflow has two processing modes:
-
-### Dual mode
-
-1. **Record** — mic audio at 16 kHz captured in 30ms frames
-2. **Chunk** — webrtcvad silence detection flushes speech segments mid-recording
-3. **Transcribe** — chunks are sent to the configured transcription model in parallel
-4. **Clean up** — the merged transcript is sent to the configured cleanup model
-5. **Paste** — cleaned text is pasted once into whichever field is active when processing finishes
-
-### Mono mode
-
-1. **Record + chunk** — same local audio pipeline
-2. **Process in order** — each WAV chunk is sent directly to one audio-capable OpenAI or Gemini model; calls are sequential so unfinished text can become context for the next chunk, but they begin as soon as chunks close while the user is still speaking
-3. **Transcribe + clean + score** — the model returns cleaned text for the current chunk plus a `completion_score` from 0 to 1 indicating whether the combined thought is semantically complete
-4. **Build output incrementally** — completed thoughts are buffered locally; unfinished text feeds the next chunk as context
-5. **Paste after processing** — all completed and remaining low-confidence text is pasted once to the currently active field
-
-The context sent back to the model is only a trailing excerpt (`MONO_CONTEXT_CHARS`); the full unresolved text stays local. The model is explicitly instructed to transcribe only the current audio chunk and not repeat previous context.
-
-Mono mode removes the separate transcription-to-cleanup API hop. Dual mode remains available when dedicated speech-to-text plus a separate cleanup model gives better quality, latency, or cost for your setup.
+The app runs in the system tray. A small waveform appears at the top of the screen while recording or processing and disappears when idle.
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.10+
-- API key for whichever provider(s) your selected models use:
-  - Groq
-  - OpenAI
-  - Gemini
+- Windows 10 or 11, with a working microphone
+- **Python 3.13** — the only version tested in GitHub Actions (older versions are not currently verified by CI)
+- API keys for the providers selected in your configuration
 
-## Setup
+**Default dual-mode setup:** OpenAI transcribes with `gpt-transcribe`; Groq cleans with `openai/gpt-oss-20b`. This requires **both** `OPENAI_API_KEY` and `GROQ_API_KEY`. You can change either model in `.env` without changing Python source.
 
-```bash
+## Install (Windows PowerShell)
+
+1. Install [Python 3.13](https://www.python.org/downloads/) and Git if needed.
+2. Open PowerShell and run:
+
+```powershell
 git clone https://github.com/gfmaciel/not-wisprflow.git
 cd not-wisprflow
-python -m pip install -r requirements.txt
-copy .env.example .env
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+notepad .env
 ```
 
-Then edit `.env` and set the required API key(s) and models.
+3. Enter your `OPENAI_API_KEY` and `GROQ_API_KEY`. Keep the default models or explicitly select the providers you want.
+4. Save `.env`, then double-click **`start.bat`** in the project directory.
 
-## Run
+The launcher prefers `.venv\Scripts\pythonw.exe`, then `venv\Scripts\pythonw.exe`, then an installed windowless Python launcher. It starts **only on demand**; it does not create a startup entry, scheduled task, or background service. Windows may briefly show a command window while opening the batch file, but no terminal remains open.
 
-Double-click `start.bat` on Windows. It launches `pythonw.exe` (or `pyw.exe`) without leaving a console window. No auto-start is installed. If startup fails, see `not-wisprflow.log`. Run `python main.py` from a terminal for interactive debugging.
+For errors, check `not-wisprflow.log`. To run in a terminal:
 
-**Hotkey (default `Alt+\`):**
-- **Tap** — press once to start, press again to stop
-- **Hold** — hold to record, release to stop
-
-## Model selection
-
-The recommended model syntax is:
-
-```text
-provider:model
+```powershell
+.\.venv\Scripts\python.exe main.py
 ```
 
-Supported provider prefixes are `groq:`, `openai:`, and `gemini:`.
+## Use
 
-This makes provider routing explicit and lets each dual-mode stage use a different provider without code changes.
+The default shortcut is **Alt + \**. It works globally, including when another application has focus.
 
-Examples:
+- **Tap:** tap once to begin recording; tap again to stop.
+- **Hold:** hold for more than 0.5 seconds to record; release to stop.
+- **Quit:** right-click the system-tray icon and select **Quit**.
 
-```env
-# OpenAI transcription + Gemini cleanup
+The hotkey uses one non-suppressing keyboard hook. It does not consume or rewrite the shortcut; the focused app may also react to those keys. A Windows named mutex prevents duplicate running instances.
+
+**Paste target:** The result is pasted **once, after processing**, into the text field that has focus **at that time**, even if you switched windows while recording. There is no focus-lock or `SAFE_PASTE_TARGET` setting. The app copies the final text to the clipboard and sends **Ctrl + V**; your previous clipboard content is replaced.
+
+## Processing modes
+
+### Dual mode (default)
+
+1. Record 16 kHz mono audio in 30 ms frames through the default microphone.
+2. Detect pauses with WebRTC VAD. Short speech chunks can be held until more audio is available.
+3. Transcribe WAV chunks in parallel with the selected transcription provider.
+4. Merge the transcriptions **in spoken order** and send the result to the separate cleanup model.
+5. Buffer the cleanup response and paste the completed result once.
+
+The cleanup prompt preserves meaning, tone, and language; fixes punctuation, spelling, and clearly unnecessary filler words; and applies clear requests to edit or format the *transcript itself*. Questions, content requests, and external actions are **transcribed**, not carried out. The model is instructed not to invent an email subject, greeting, recipient, signature, or list entry. These are model instructions, not a guarantee of perfect text output.
+
+### Mono mode
+
+1. Record and chunk audio through the same local pipeline.
+2. Send chunks **sequentially** to one audio-capable OpenAI or Gemini model. It returns `text` and a `completion_score` for the combined thought.
+3. Keep incomplete text locally and pass only its trailing excerpt (`MONO_CONTEXT_CHARS`) as context for the next chunk. The model is instructed not to repeat that excerpt.
+4. Buffer complete and incomplete text, then **paste once after processing ends**. The threshold does **not** trigger early keystrokes.
+
+`completion_score` is a model-generated estimate, not a calibrated probability. Groq is not supported for mono mode.
+
+## Choose models
+
+Prefer the explicit `provider:model` format:
+
+```dotenv
+# Default: OpenAI transcription + Groq cleanup
 PROCESSING_MODE=dual
 TRANSCRIPTION_MODEL=openai:gpt-transcribe
-CLEANUP_MODEL=gemini:gemini-3.6-flash
+CLEANUP_MODEL=openai/gpt-oss-20b
+PRIMARY_PROVIDER=groq
+```
 
-# Gemini transcription + OpenAI cleanup
-PROCESSING_MODE=dual
-TRANSCRIPTION_MODEL=gemini:gemini-3.6-flash
-CLEANUP_MODEL=openai:gpt-5-mini
+The cleanup model above has an **unprefixed legacy Groq model ID**: `/` is part of the model name, not a provider separator. To select a different provider explicitly, use a colon:
 
-# One OpenAI audio model does transcription + cleanup + semantic completion scoring
+```dotenv
+# Example: OpenAI for both dual-mode stages (only OPENAI_API_KEY needed)
+TRANSCRIPTION_MODEL=openai:gpt-transcribe
+CLEANUP_MODEL=openai:gpt-4o-mini
+
+# Alternative: one model for both tasks (only OPENAI_API_KEY needed)
 PROCESSING_MODE=mono
 MONO_MODEL=openai:gpt-audio-mini
-MONO_PASTE_THRESHOLD=0.90
-
-# One Gemini model does the same
-PROCESSING_MODE=mono
-MONO_MODEL=gemini:gemini-3.6-flash
-MONO_PASTE_THRESHOLD=0.90
 ```
 
-Raw legacy model names still work in dual mode with `PRIMARY_PROVIDER=groq|openai`, including the existing OpenAI/Groq fallback behavior.
+Supported provider prefixes are `openai:`, `groq:`, and `gemini:` for dual mode; mono mode supports OpenAI or Gemini. Models must support the required audio or text API.
 
-## Configuration (`.env`)
+Legacy raw model names still route via `PRIMARY_PROVIDER` in dual mode. Some legacy **transcription** configurations can fall back between OpenAI and Groq when both are configured. **Cleanup never silently changes models or providers**: a missing key for its configured provider produces an error. Prefer explicit model prefixes to avoid ambiguous routing.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROCESSING_MODE` | `dual` | `dual` = transcription then cleanup; `mono` = one audio model does both |
-| `TRANSCRIPTION_MODEL` | `openai:gpt-transcribe` | Dual-mode transcription model. Prefer `provider:model` |
-| `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Dual-mode cleanup model. Prefer `provider:model` |
-| `MONO_MODEL` | `openai:gpt-audio-mini` | Audio-capable OpenAI/Gemini model used in mono mode |
-| `MONO_PASTE_THRESHOLD` | `0.90` | Marks a thought complete when its score reaches this value; paste occurs after processing |
-| `MONO_CONTEXT_CHARS` | `500` | Max trailing characters of unresolved text sent as context with the next chunk |
-| `MONO_TEMPERATURE` | `0.0` | Sampling temperature for mono transcription/cleanup/scoring |
-| `MONO_LOG_SCORES` | `false` | Log score, threshold, paste decision, and buffer size for calibration |
-| `GROQ_API_KEY` | optional | Required when a selected stage uses Groq |
-| `OPENAI_API_KEY` | optional | Required when a selected stage uses OpenAI |
-| `GEMINI_API_KEY` | optional | Required when a selected stage uses Gemini |
-| `PRIMARY_PROVIDER` | `groq` | Legacy dual-mode provider selection for raw model names |
-| `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1` | Legacy OpenAI transcription model/fallback |
-| `OPENAI_CLEANUP_MODEL` | `gpt-4o-mini` | Legacy OpenAI cleanup model/fallback |
-| `LANGUAGES` | `Portuguese,English` | Comma-separated languages |
-| `HOTKEY` | `alt+\` | Activation hotkey |
-| `SILENCE_THRESHOLD` | `1` | webrtcvad aggressiveness (0–3) |
-| `SILENCE_DURATION` | `2.0` | Seconds of silence before flushing a chunk |
-| `MIN_CHUNK_DURATION` | `3.0` | Minimum chunk length in seconds |
+## Configuration
 
-`completion_score` is intentionally treated as an operational ranking rather than a calibrated probability. Enable `MONO_LOG_SCORES=true` while testing and adjust `MONO_PASTE_THRESHOLD` based on observed premature thought boundaries versus overlong context buffers.
-
-## Provider behavior
-
-- **OpenAI transcription:** uses the Audio Transcriptions endpoint (`gpt-transcribe`); single-language hints use `languages`.
-- **OpenAI cleanup:** uses Chat Completions with text input.
-- **OpenAI mono:** sends base64 WAV as `input_audio`. Because `gpt-audio`/`gpt-audio-mini` support function calling but not Structured Outputs, mono forces an `emit_transcript_result` function call carrying `text` + `completion_score`.
-- **Gemini transcription:** sends inline WAV audio plus a transcription instruction.
-- **Gemini cleanup:** sends text with the cleanup system instruction and supports streaming.
-- **Gemini mono:** sends inline WAV audio and uses Gemini structured JSON output for `text` + `completion_score`.
-- **Groq:** remains supported for dual-mode transcription and cleanup, including the existing OpenAI/Groq legacy fallback.
-
-## Tests
-
-```bash
-pytest tests/ -v
-```
-
-## Keyboard and focus
-
-The shortcut uses a single non-suppressing global hook, including when a different app is focused. The keys are not consumed or rewritten; the other app may also interpret the shortcut. A Windows named mutex prevents duplicate running instances.
-
-The recorded result is pasted **once, after processing**, in the field active then, even if focus changed while recording. Mono still processes audio chunks sequentially and returns `text` and `completion_score` internally, but no longer pastes partial chunks early. Keep the target input focused when processing finishes.
-
-If an existing local configuration explicitly sets an old `TRANSCRIPTION_MODEL`, change it to `openai:gpt-transcribe` and provide `OPENAI_API_KEY`. The cleanup model remains whatever `CLEANUP_MODEL` configures. The default cleanup model `openai/gpt-oss-20b` is served by Groq, so the default dual-mode combination also requires `GROQ_API_KEY`. A missing cleanup-provider key causes a clear startup error instead of silently switching to a different model.
-
-The transcription step passes configured language hints (`Portuguese,English` becomes `["pt", "en"]`) to `gpt-transcribe`, using the multi-language `languages` parameter.
-
-If using a project virtual environment, `start.bat` looks for `.venv\\Scripts\\pythonw.exe` or `venv\\Scripts\\pythonw.exe` first. It still starts only on demand. An initial brief command-shell flash can occur when Windows opens a `.bat`; the Python app itself does not keep a terminal open. Startup errors are appended to `not-wisprflow.log`.
-
-
-## Configuration precedence and test CI
-
-At startup, `main.py` loads **the `.env` next to `config.py`**, regardless of the current working directory. Configuration priority is:
+Copy `.env.example` to `.env` and edit your copy. The `.env` beside `config.py` is loaded at app startup. Priority is:
 
 1. Explicit process environment variables
-2. Values in the local `.env`
-3. Hardcoded defaults in `Config.from_env()`
+2. Local `.env` values
+3. Python code defaults
 
-For example, `TRANSCRIPTION_MODEL` and `CLEANUP_MODEL` set in `.env` replace the corresponding defaults. The configured cleanup model is never silently changed. Tests only use temporary, synthetic `.env` files; they never read your local secrets.
+The `.env` file is ignored by Git. Changing it requires restarting the app. Do not commit API keys.
 
-The Windows CI checks Python 3.13 on pull requests that touch Python source, tests, dependencies, the batch launcher, or the CI workflow. Documentation-only PRs skip CI. Merging an already-tested PR does **not** trigger a second run. Use `workflow_dispatch` for a manual run, including when checking a direct commit to `main`. Note: if this check becomes a required branch-protection check, GitHub path filtering can leave documentation-only PRs pending; adjust branch rules or change the trigger policy accordingly.
+| Setting | Code default | Effect |
+| --- | --- | --- |
+| `PROCESSING_MODE` | `dual` | `dual` = transcription + cleanup; `mono` = one audio model |
+| `TRANSCRIPTION_MODEL` | `openai:gpt-transcribe` | Dual-mode speech-to-text model |
+| `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Separate cleanup model, routed to Groq by default |
+| `MONO_MODEL` | `openai:gpt-audio-mini` | OpenAI or Gemini model for mono mode |
+| `OPENAI_API_KEY` | empty | Required for selected OpenAI models |
+| `GROQ_API_KEY` | empty | Required for selected Groq models |
+| `GEMINI_API_KEY` | empty | Required for selected Gemini models |
+| `PRIMARY_PROVIDER` | `groq` | Provider for legacy unprefixed dual-mode model IDs |
+| `LANGUAGES` | `Portuguese,English` | Speech language hints and cleanup languages |
+| `HOTKEY` | `alt+\` | One global key combination |
+| `SILENCE_THRESHOLD` | `1` | WebRTC VAD aggressiveness: 0–3 (larger = more aggressive) |
+| `SILENCE_DURATION` | `2.0` | Seconds of silence before flushing a chunk |
+| `MIN_CHUNK_DURATION` | `3.0` | Minimum chunk duration in seconds |
+| `MONO_PASTE_THRESHOLD` | `0.90` | Score at which mono marks a buffered thought complete |
+| `MONO_CONTEXT_CHARS` | `500` | Maximum characters of unfinished context sent to the next mono chunk |
+| `MONO_TEMPERATURE` | `0.0` | Sampling temperature for mono processing |
+| `MONO_LOG_SCORES` | `false` | Log scores and buffering decisions |
+| `CLEANUP_SYSTEM_PROMPT` | built-in cleanup rules | Optional **additional** style preferences; mandatory transcript-only rules remain |
+| `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1` | Legacy OpenAI transcription selection/fallback for unprefixed models |
+| `OPENAI_CLEANUP_MODEL` | `gpt-4o-mini` | Legacy compatibility value; current pipeline does **not** use it to replace cleanup model |
+
+For `gpt-transcribe`, known language names in `LANGUAGES` map to multiple language hints (e.g. `Portuguese,English` → `pt,en`). Other transcription models receive a single hint only if one language is configured. Unknown language names do not map to hints. The cleanup model receives the original language list in its prompt.
+
+The built-in cleanup policy is kept even when `CLEANUP_SYSTEM_PROMPT` is provided. Use that value only for compatible style preferences, not to replace the application's transcript-only rules.
+
+## Providers and privacy
+
+Dual mode can use OpenAI, Groq, or Gemini for transcription and cleanup if the model supports the request. OpenAI transcription uses the Audio Transcriptions API; cleanup uses each provider's text generation API. Mono uses an audio-capable model plus a structured response with `text` and `completion_score`.
+
+Audio goes to the transcription provider in dual mode; the resulting transcript goes to the cleanup provider. In mono mode, audio and optional preceding text context go to the selected mono provider. Consult each provider's policies before dictating confidential information.
+
+## Troubleshooting
+
+- **Startup fails:** open `not-wisprflow.log` or run `.\.venv\Scripts\python.exe main.py`. Check the required provider keys and model names.
+- **Hotkey fails:** check `HOTKEY` and other applications using that shortcut. Global keyboard hooks may behave differently in elevated applications.
+- **No microphone audio:** verify the Windows default input and microphone permissions.
+- **Text goes into the wrong app:** leave the intended field focused **when processing finishes**. The app intentionally does not lock focus at recording start.
+- **An older `.env` uses Whisper:** `TRANSCRIPTION_MODEL=whisper-large-v3-turbo` overrides the code default. Change it to `openai:gpt-transcribe` if that is the desired model.
+
+## Tests and CI
+
+Run tests locally in the project environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/
+```
+
+CI runs on **Windows / Python 3.13** for pull requests changing Python code, tests, dependencies, `start.bat`, or the workflow. Documentation-only pull requests skip CI. Merging an already-tested PR or pushing directly to `main` does not trigger another automatic run; use **Actions → CI → Run workflow** to run it manually.
+
+The tests mock provider responses and include a disposable Windows batch-launch smoke test. They do **not** call paid APIs, read your private `.env`, or prove the hotkey works interactively in every Windows application.
