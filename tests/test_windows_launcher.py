@@ -19,8 +19,8 @@ def test_launcher_is_manual_and_uses_windowless_python():
     assert "schtasks" not in source
     assert "reg add" not in source
     assert "startup" not in source
-    assert ".venv\\\\scripts\\\\pythonw.exe" in source
-    assert source.index(".venv\\\\scripts\\\\pythonw.exe") < source.index("where pythonw.exe")
+    assert ".venv\\scripts\\pythonw.exe" in source
+    assert source.index(".venv\\scripts\\pythonw.exe") < source.index("where pythonw.exe")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Batch launch requires Windows")

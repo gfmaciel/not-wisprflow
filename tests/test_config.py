@@ -124,11 +124,11 @@ def test_local_dotenv_overrides_code_defaults_without_real_secrets(tmp_path):
     """Only read the synthetic file we created, never the user's .env."""
     dotenv = tmp_path / ".env"
     dotenv.write_text(
-        "OPENAI_API_KEY=sk_fake\\n"
-        "TRANSCRIPTION_MODEL=openai:gpt-4o-mini-transcribe\\n"
-        "CLEANUP_MODEL=openai:gpt-4o-mini\\n"
-        "HOTKEY=ctrl+shift+x\\n"
-        "LANGUAGES=Portuguese\\n",
+        "OPENAI_API_KEY=sk_fake\n"
+        "TRANSCRIPTION_MODEL=openai:gpt-4o-mini-transcribe\n"
+        "CLEANUP_MODEL=openai:gpt-4o-mini\n"
+        "HOTKEY=ctrl+shift+x\n"
+        "LANGUAGES=Portuguese\n",
         encoding="utf-8",
     )
     with patch.dict(os.environ, {}, clear=True):

@@ -1,10 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from cleanup import CleanupProcessor
-from config import Config, parse_model_spec
+from config import Config
 from providers import OpenAIProvider
-from transcriber import Transcriber
 
 
 def _provider():
