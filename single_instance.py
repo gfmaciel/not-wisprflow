@@ -13,11 +13,15 @@ class SingleInstance:
         self._handle = None
 
     def acquire(self) -> bool:
+        if self._handle is not None:
+            return True
         if sys.platform != "win32":
             return True
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
         kernel.CreateMutexW.restype = ctypes.c_void_p
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel.CloseHandle.restype = ctypes.c_int
         handle = kernel.CreateMutexW(None, False, "Local\\not-wisprflow")
         if not handle:
             raise OSError(ctypes.get_last_error(), "Cannot create app mutex")

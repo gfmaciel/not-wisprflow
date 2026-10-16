@@ -30,17 +30,19 @@ def main() -> None:
             on_state=lambda state: bar.signals.state_changed.emit(state),
             on_spectrum=lambda bands: bar.signals.spectrum.emit(tuple(bands)),
         )
-        listener = GlobalHotkey(
-            config.hotkey,
-            pipeline.on_hotkey_press,
-            pipeline.on_hotkey_release,
-        )
+        listener = None
         try:
+            listener = GlobalHotkey(
+                config.hotkey,
+                pipeline.on_hotkey_press,
+                pipeline.on_hotkey_release,
+            )
             listener.start()
             print(f"[not-wisprflow] Running. Hotkey: {config.hotkey}")
             exit_code = app.exec()
         finally:
-            listener.stop()
+            if listener is not None:
+                listener.stop()
             pipeline.shutdown()
         if exit_code:
             raise SystemExit(exit_code)
