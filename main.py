@@ -1,56 +1,53 @@
 from __future__ import annotations
+
 import sys
-import time
-import keyboard
+
+from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication
+
 from config import Config
+from hotkey import GlobalHotkey
 from pipeline import Pipeline
+from single_instance import SingleInstance
 from ui import StatusBar
 
 
 def main() -> None:
-    config = Config.from_env()
+    instance = SingleInstance()
+    if not instance.acquire():
+        print("[not-wisprflow] Already running; skipping duplicate instance.")
+        return
 
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
-
-    bar = StatusBar()
-
-    pipeline = Pipeline(
-        config,
-        on_state=lambda s: bar.signals.state_changed.emit(s),
-        on_spectrum=lambda bands: bar.signals.spectrum.emit(tuple(bands)),
-    )
-
-    _press_time: list[float] = [0.0]
-
-    def on_press(_event=None) -> None:
-        _press_time[0] = time.monotonic()
-        pipeline.on_hotkey_press()
-
-    def on_release(_event=None) -> None:
-        pipeline.on_hotkey_release(time.monotonic() - _press_time[0])
-
-    # keyboard.add_hotkey handles modifier combos on press;
-    # on_release_key fires when the trigger key is lifted.
     try:
-        trigger = config.hotkey.split("+")[-1]
-        keyboard.add_hotkey(config.hotkey, on_press, suppress=True)
-        keyboard.on_release_key(trigger, on_release)
-    except ValueError as exc:
-        print(f"[not-wisprflow] Invalid HOTKEY '{config.hotkey}': {exc}")
-        print("  Fix HOTKEY in your .env — examples: ctrl+shift+space, alt+s, ctrl+f1")
-        sys.exit(1)
-
-    print(f"[not-wisprflow] Running. Hotkey: {config.hotkey}  (Ctrl+C to quit)")
-
-    # Start Qt main event loop (PySide6 — not a shell command)
-    run_loop = getattr(app, "exec")
-    exit_code = run_loop()
-
-    pipeline.shutdown()
-    keyboard.unhook_all()
-    sys.exit(exit_code)
+        # Read local configuration only when launching the app, never in tests.
+        load_dotenv()
+        config = Config.from_env()
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        bar = StatusBar()
+        pipeline = Pipeline(
+            config,
+            on_state=lambda state: bar.signals.state_changed.emit(state),
+            on_spectrum=lambda bands: bar.signals.spectrum.emit(tuple(bands)),
+        )
+        listener = None
+        try:
+            listener = GlobalHotkey(
+                config.hotkey,
+                pipeline.on_hotkey_press,
+                pipeline.on_hotkey_release,
+            )
+            listener.start()
+            print(f"[not-wisprflow] Running. Hotkey: {config.hotkey}")
+            exit_code = app.exec()
+        finally:
+            if listener is not None:
+                listener.stop()
+            pipeline.shutdown()
+        if exit_code:
+            raise SystemExit(exit_code)
+    finally:
+        instance.close()
 
 
 if __name__ == "__main__":

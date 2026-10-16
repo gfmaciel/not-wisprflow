@@ -119,7 +119,10 @@ class OpenAIProvider:
             "model": model,
         }
         if language:
-            kwargs["language"] = language
+            if model == "gpt-transcribe":
+                kwargs["languages"] = [language]
+            else:
+                kwargs["language"] = language
         result = self.client.audio.transcriptions.create(**kwargs)
         return result.strip() if isinstance(result, str) else result.text.strip()
 

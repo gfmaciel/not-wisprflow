@@ -2,10 +2,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Optional
-from dotenv import load_dotenv
-from cleanup import _SYS_BASE
+from cleanup import _SYS_BASE, with_cleanup_policy
 
-load_dotenv()
 
 _LANG_CODES = {
     "portuguese": "pt", "english": "en", "spanish": "es",
@@ -52,7 +50,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 @dataclass
 class Config:
     groq_api_key: Optional[str] = None
-    transcription_model: str = "whisper-large-v3-turbo"
+    transcription_model: str = "openai:gpt-transcribe"
     cleanup_model: str = "openai/gpt-oss-20b"
     cleanup_prompt: str = field(default_factory=lambda: _SYS_BASE)
     languages: list[str] = field(default_factory=lambda: ["Portuguese", "English"])
@@ -71,7 +69,6 @@ class Config:
     mono_context_chars: int = 500
     mono_temperature: float = 0.0
     mono_log_scores: bool = False
-    safe_paste_target: bool = True
 
     @classmethod
     def from_env(cls) -> Config:
@@ -91,14 +88,13 @@ class Config:
         openai_api_key = os.getenv("OPENAI_API_KEY", "").strip() or None
         gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
 
-        transcription_model = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
+        transcription_model = os.getenv("TRANSCRIPTION_MODEL", "openai:gpt-transcribe")
         cleanup_model = os.getenv("CLEANUP_MODEL", "openai/gpt-oss-20b")
         mono_model = os.getenv("MONO_MODEL", "openai:gpt-audio-mini")
         mono_paste_threshold = float(os.getenv("MONO_PASTE_THRESHOLD", "0.90"))
         mono_context_chars = int(os.getenv("MONO_CONTEXT_CHARS", "500"))
         mono_temperature = float(os.getenv("MONO_TEMPERATURE", "0.0"))
         mono_log_scores = _env_bool("MONO_LOG_SCORES", False)
-        safe_paste_target = _env_bool("SAFE_PASTE_TARGET", True)
 
         if not 0.0 <= mono_paste_threshold <= 1.0:
             raise ValueError("MONO_PASTE_THRESHOLD must be between 0 and 1")
@@ -167,7 +163,7 @@ class Config:
             groq_api_key=groq_api_key,
             transcription_model=transcription_model,
             cleanup_model=cleanup_model,
-            cleanup_prompt=os.getenv("CLEANUP_SYSTEM_PROMPT", _SYS_BASE),
+            cleanup_prompt=with_cleanup_policy(os.getenv("CLEANUP_SYSTEM_PROMPT")),
             languages=[
                 l.strip()
                 for l in os.getenv("LANGUAGES", "Portuguese,English").split(",")
@@ -188,7 +184,6 @@ class Config:
             mono_context_chars=mono_context_chars,
             mono_temperature=mono_temperature,
             mono_log_scores=mono_log_scores,
-            safe_paste_target=safe_paste_target,
         )
 
     @property

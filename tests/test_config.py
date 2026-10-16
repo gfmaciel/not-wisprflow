@@ -22,7 +22,7 @@ def test_config_loads_from_env():
 
 def test_config_raises_without_any_api_key():
     with patch.dict(os.environ, {}, clear=True):
-        with pytest.raises(ValueError, match="No API key"):
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
             Config.from_env()
 
 
@@ -39,7 +39,7 @@ def test_config_groq_primary_missing_key_falls_back_to_openai(capsys):
 
 
 def test_config_openai_primary_missing_key_falls_back_to_groq(capsys):
-    env = {"PRIMARY_PROVIDER": "openai", "GROQ_API_KEY": "gsk_test"}
+    env = {"PRIMARY_PROVIDER": "openai", "GROQ_API_KEY": "gsk_test", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
     with patch.dict(os.environ, env, clear=True):
         c = Config.from_env()
     assert c.primary_provider == "groq"
@@ -60,7 +60,7 @@ def test_config_openai_primary_with_key():
 
 
 def test_config_groq_no_openai_key():
-    env = {"GROQ_API_KEY": "gsk_test"}
+    env = {"GROQ_API_KEY": "gsk_test", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
     with patch.dict(os.environ, env, clear=True):
         c = Config.from_env()
     assert c.openai_api_key is None
@@ -74,7 +74,7 @@ def test_config_invalid_primary_provider():
 
 
 def test_config_openai_model_defaults():
-    env = {"GROQ_API_KEY": "x"}
+    env = {"GROQ_API_KEY": "x", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
     with patch.dict(os.environ, env, clear=True):
         c = Config.from_env()
     assert c.openai_transcription_model == "whisper-1"
@@ -82,21 +82,21 @@ def test_config_openai_model_defaults():
 
 
 def test_whisper_language_single():
-    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese"}, clear=True):
+    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}, clear=True):
         c = Config.from_env()
     assert c.whisper_language == "pt"
 
 
 def test_whisper_language_multi():
-    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese,English"}, clear=True):
+    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese,English", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}, clear=True):
         c = Config.from_env()
     assert c.whisper_language is None
 
 
 def test_config_defaults():
-    with patch.dict(os.environ, {"GROQ_API_KEY": "x"}, clear=True):
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "x"}, clear=True):
         c = Config.from_env()
-    assert c.transcription_model == "whisper-large-v3-turbo"
+    assert c.transcription_model == "openai:gpt-transcribe"
     assert c.hotkey == "alt+\\"
     assert c.processing_mode == "dual"
 
