@@ -6,7 +6,8 @@ from typing import Callable, Optional, Sequence
 from config import Config, parse_model_spec
 from recorder import Recorder
 from audio_analysis import analyze_mic_frame
-from chunker import Chunker
+from chunker import AudioChunk, Chunker
+from transcript_merge import append_transcript
 from transcriber import Transcriber
 from cleanup import CleanupProcessor
 from mono_processor import MonoProcessor
@@ -107,10 +108,13 @@ class Pipeline:
             aggressiveness=config.silence_aggressiveness,
             silence_duration=config.silence_duration,
             min_duration=config.min_chunk_duration,
+            max_duration=config.max_chunk_duration,
+            # Mono already passes prior text context; don't duplicate its audio.
+            overlap_duration=config.chunk_overlap_duration if self._mode == "dual" else 0.0,
         )
         self._executor = ThreadPoolExecutor(max_workers=1 if self._mode == "mono" else 4)
 
-        self._futures: list[Future] = []
+        self._futures: list[tuple[Future, bool]] = []
         self._lock = threading.Lock()
         self._active = False
         self._processing = False
@@ -261,13 +265,13 @@ class Pipeline:
         if chunk:
             self._dispatch_chunk(chunk)
 
-    def _dispatch_chunk(self, wav_bytes: bytes) -> None:
+    def _dispatch_chunk(self, chunk: AudioChunk) -> None:
         if self._mode == "mono":
-            future = self._executor.submit(self._mono.process, wav_bytes)
+            future = self._executor.submit(self._mono.process, chunk.wav_bytes)
         else:
-            future = self._executor.submit(self._transcriber.transcribe, wav_bytes)
+            future = self._executor.submit(self._transcriber.transcribe, chunk.wav_bytes)
         with self._lock:
-            self._futures.append(future)
+            self._futures.append((future, chunk.overlaps_previous))
 
     def _buffer_mono_output(self, text: str) -> None:
         self._mono_paste_buffer.append(text)
@@ -275,13 +279,13 @@ class Pipeline:
     def _collect_and_paste(self) -> None:
         try:
             with self._lock:
-                futures, self._futures = list(self._futures), []
+                jobs, self._futures = list(self._futures), []
 
-            if not futures:
+            if not jobs:
                 return
 
             if self._mode == "mono":
-                for future in futures:
+                for future, _ in jobs:
                     try:
                         future.result()
                     except Exception as exc:
@@ -293,26 +297,32 @@ class Pipeline:
                     paste(output)
                 return
 
-            future_to_index = {future: idx for idx, future in enumerate(futures)}
+            future_to_index = {future: idx for idx, (future, _) in enumerate(jobs)}
             completed: dict[int, str] = {}
             next_index = 0
-            outputs: list[str] = []
+            merged = ""
+            previous_chunk_valid = False
 
-            for future in as_completed(futures):
+            for future in as_completed(future_to_index):
                 idx = future_to_index[future]
                 try:
                     completed[idx] = future.result()
-                except Exception:
+                except Exception as exc:
+                    print(f"[not-wisprflow] Transcription chunk {idx + 1} failed: {exc}")
                     completed[idx] = ""
 
                 while next_index in completed:
                     text = completed.pop(next_index)
+                    overlaps_previous = jobs[next_index][1]
                     next_index += 1
                     if self._should_skip_text(text):
+                        # Don't deduplicate across a failed/filtered intermediate chunk.
+                        previous_chunk_valid = False
                         continue
-                    outputs.append(text.strip())
-
-            merged = " ".join(part for part in outputs if part)
+                    merged = append_transcript(
+                        merged, text, overlaps_previous and previous_chunk_valid
+                    )
+                    previous_chunk_valid = True
             if not merged or self._should_skip_text(merged):
                 return
 
