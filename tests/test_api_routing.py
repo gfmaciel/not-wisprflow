@@ -50,7 +50,7 @@ def test_gpt_transcribe_multilingual_hints_are_forwarded_without_changing_cleanu
     assert "language" not in kwargs
     config = Config(openai_api_key="sk_test", groq_api_key="gsk_test")
     assert config.transcription_languages == ["pt", "en"]
-    assert config.cleanup_model == "openai/gpt-oss-20b"
+    assert config.cleanup_model == "openai:gpt-6-luna"
 
 
 def test_legacy_cleanup_model_is_never_silently_replaced():

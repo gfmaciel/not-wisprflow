@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass
 from typing import Iterator, Optional, Sequence
 
+from reasoning_policy import text_generation_options
+
 
 @dataclass(frozen=True)
 class MonoResult:
@@ -81,16 +83,19 @@ class GroqProvider:
         return result.strip() if isinstance(result, str) else result.text.strip()
 
     def cleanup(self, text: str, model: str, system_prompt: str) -> str:
+        options = text_generation_options("groq", model)
         response = self.client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
+            **options,
         )
         return response.choices[0].message.content.strip()
 
     def stream_cleanup(self, text: str, model: str, system_prompt: str) -> Iterator[str]:
+        options = text_generation_options("groq", model)
         response = self.client.chat.completions.create(
             model=model,
             messages=[
@@ -98,6 +103,7 @@ class GroqProvider:
                 {"role": "user", "content": text},
             ],
             stream=True,
+            **options,
         )
         for event in response:
             delta = event.choices[0].delta.content or ""
@@ -134,16 +140,19 @@ class OpenAIProvider:
         return result.strip() if isinstance(result, str) else result.text.strip()
 
     def cleanup(self, text: str, model: str, system_prompt: str) -> str:
+        options = text_generation_options("openai", model)
         response = self.client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
+            **options,
         )
         return response.choices[0].message.content.strip()
 
     def stream_cleanup(self, text: str, model: str, system_prompt: str) -> Iterator[str]:
+        options = text_generation_options("openai", model)
         response = self.client.chat.completions.create(
             model=model,
             messages=[
@@ -151,6 +160,7 @@ class OpenAIProvider:
                 {"role": "user", "content": text},
             ],
             stream=True,
+            **options,
         )
         for event in response:
             delta = event.choices[0].delta.content or ""
@@ -166,9 +176,11 @@ class OpenAIProvider:
         temperature: float = 0.0,
     ) -> MonoResult:
         encoded = base64.b64encode(wav_bytes).decode("ascii")
+        options = text_generation_options("openai", model)
         response = self.client.chat.completions.create(
             model=model,
             temperature=temperature,
+            **options,
             messages=[
                 {"role": "system", "content": prompt},
                 {
@@ -221,30 +233,42 @@ class GeminiProvider:
     def transcribe(self, wav_bytes: bytes, model: str, language: Optional[str] = None) -> str:
         types = self._types()
         language_hint = f" The expected language is {language}." if language else ""
+        options = text_generation_options("gemini", model)
         response = self.client.models.generate_content(
             model=model,
             contents=[
                 "Transcribe the speech accurately. Return only the transcript." + language_hint,
                 types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
             ],
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(**options),
+            ),
         )
         return (response.text or "").strip()
 
     def cleanup(self, text: str, model: str, system_prompt: str) -> str:
         types = self._types()
+        options = text_generation_options("gemini", model)
         response = self.client.models.generate_content(
             model=model,
             contents=text,
-            config=types.GenerateContentConfig(system_instruction=system_prompt),
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                thinking_config=types.ThinkingConfig(**options),
+            ),
         )
         return (response.text or "").strip()
 
     def stream_cleanup(self, text: str, model: str, system_prompt: str) -> Iterator[str]:
         types = self._types()
+        options = text_generation_options("gemini", model)
         response = self.client.models.generate_content_stream(
             model=model,
             contents=text,
-            config=types.GenerateContentConfig(system_instruction=system_prompt),
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                thinking_config=types.ThinkingConfig(**options),
+            ),
         )
         for chunk in response:
             delta = chunk.text or ""
@@ -260,6 +284,7 @@ class GeminiProvider:
         temperature: float = 0.0,
     ) -> MonoResult:
         types = self._types()
+        options = text_generation_options("gemini", model)
         response = self.client.models.generate_content(
             model=model,
             contents=[
@@ -269,6 +294,7 @@ class GeminiProvider:
             config={
                 "system_instruction": prompt,
                 "temperature": temperature,
+                "thinking_config": options,
                 "response_format": {
                     "text": {
                         "mime_type": "application/json",

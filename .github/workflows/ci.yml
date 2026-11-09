@@ -34,12 +34,18 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: requirements.txt
+
+      # Reuse compiled wheels between PRs, with faster parallel resolution
+      # than reinstalling the entire Python environment through pip.
+      - name: Set up uv (with dependency cache)
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
 
       - name: Install dependencies
         run: |
-          python -m pip install -r requirements.txt
+          uv pip install --system -r requirements.txt
           python -m pip check
 
       - name: Check Python syntax

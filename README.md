@@ -10,7 +10,7 @@ The app runs in the system tray. A small waveform appears at the top of the scre
 - **Python 3.13** — the only version tested in GitHub Actions (older versions are not currently verified by CI)
 - API keys for the providers selected in your configuration
 
-**Default dual-mode setup:** OpenAI transcribes with `gpt-transcribe`; Groq cleans with `openai/gpt-oss-20b`. This requires **both** `OPENAI_API_KEY` and `GROQ_API_KEY`. You can change either model in `.env` without changing Python source.
+**Default dual-mode setup:** OpenAI transcribes with `gpt-transcribe`, then `gpt-6-luna` cleans up the text with **`reasoning_effort="none"`**. Only `OPENAI_API_KEY` is required. Models remain configurable in `.env`, but cleanup providers that cannot fully disable reasoning are rejected rather than silently generating reasoning tokens.
 
 ## Install (Windows PowerShell)
 
@@ -26,7 +26,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-3. Enter your `OPENAI_API_KEY` and `GROQ_API_KEY`. Keep the default models or explicitly select the providers you want.
+3. Enter your `OPENAI_API_KEY`. For optional Groq/Gemini configurations, add their corresponding key. Keep the default models or explicitly select supported providers.
 4. Save `.env`, then double-click **`start.bat`** in the project directory.
 
 The launcher prefers `.venv\Scripts\pythonw.exe`, then `venv\Scripts\pythonw.exe`, then an installed windowless Python launcher. It starts **only on demand**; it does not create a startup entry, scheduled task, or background service. Windows may briefly show a command window while opening the batch file, but no terminal remains open.
@@ -54,16 +54,16 @@ The hotkey uses one non-suppressing keyboard hook. It does not consume or rewrit
 ### Dual mode (default)
 
 1. Record 16 kHz mono audio in 30 ms frames through the default microphone.
-2. Detect pauses with WebRTC VAD. Short speech chunks can be held until more audio is available.
-3. Transcribe WAV chunks in parallel with the selected transcription provider.
-4. Merge the transcriptions **in spoken order** and send the result to the separate cleanup model.
-5. Buffer the cleanup response and paste the completed result once.
+2. Detect pauses using WebRTC VAD. By default, 0.7 seconds of silence ends a segment once it reaches the 3-second minimum; shorter phrases are held until more speech or recording stops.
+3. Force a split after 12 seconds without a suitable pause. The next chunk repeats 0.8 seconds of audio from that forced boundary. A natural pause never adds overlap.
+4. Transcribe WAV chunks in parallel with the selected transcription provider. Completed chunks are merged **in spoken order**. For overlapping audio only, remove an exact matching suffix/prefix of at least two words (case/punctuation insensitive); never deduplicate natural-pause chunks.
+5. Send the merged transcript to the existing cleanup provider and paste the final result once.
 
 The cleanup prompt preserves meaning, tone, and language; fixes punctuation, spelling, and clearly unnecessary filler words; and applies clear requests to edit or format the *transcript itself*. Questions, content requests, and external actions are **transcribed**, not carried out. The model is instructed not to invent an email subject, greeting, recipient, signature, or list entry. These are model instructions, not a guarantee of perfect text output.
 
 ### Mono mode
 
-1. Record and chunk audio through the same local pipeline.
+1. Record and chunk audio through the same local pipeline (with the 12-second maximum, but **without audio overlap**, since mono already carries text context).
 2. Send chunks **sequentially** to one audio-capable OpenAI or Gemini model. It returns `text` and a `completion_score` for the combined thought.
 3. Keep incomplete text locally and pass only its trailing excerpt (`MONO_CONTEXT_CHARS`) as context for the next chunk. The model is instructed not to repeat that excerpt.
 4. Buffer complete and incomplete text, then **paste once after processing ends**. The threshold does **not** trigger early keystrokes.
@@ -75,24 +75,25 @@ The cleanup prompt preserves meaning, tone, and language; fixes punctuation, spe
 Prefer the explicit `provider:model` format:
 
 ```dotenv
-# Default: OpenAI transcription + Groq cleanup
+# Default: OpenAI transcription + OpenAI cleanup, without reasoning
 PROCESSING_MODE=dual
 TRANSCRIPTION_MODEL=openai:gpt-transcribe
-CLEANUP_MODEL=openai/gpt-oss-20b
+CLEANUP_MODEL=openai:gpt-6-luna
 PRIMARY_PROVIDER=groq
 ```
 
-The cleanup model above has an **unprefixed legacy Groq model ID**: `/` is part of the model name, not a provider separator. To select a different provider explicitly, use a colon:
+Provider names use the `provider:model` syntax. The colon is the separator, while a slash in a model name is just part of its ID:
 
 ```dotenv
-# Example: OpenAI for both dual-mode stages (only OPENAI_API_KEY needed)
-TRANSCRIPTION_MODEL=openai:gpt-transcribe
-CLEANUP_MODEL=openai:gpt-4o-mini
+# Alternative: Groq Qwen 3.8 (reasoning_effort=none; requires GROQ_API_KEY)
+CLEANUP_MODEL=groq:qwen/qwen3.8-27b
 
-# Alternative: one model for both tasks (only OPENAI_API_KEY needed)
+# Alternative: one OpenAI audio model for both tasks
 PROCESSING_MODE=mono
 MONO_MODEL=openai:gpt-audio-mini
 ```
+
+**Zero-reasoning policy:** For every text-generation request, the app selects a model/API configuration known to support zero reasoning. The default GPT-6 Luna explicitly receives `reasoning_effort="none"`; Groq Qwen 3.8 receives the same setting; supported Gemini 2.5 Flash models receive `thinking_budget=0`. Groq GPT-OSS does **not** support turning reasoning off, and Gemini 3.x cannot disable thinking. Selecting them for generation produces an explicit error; hiding reasoning in the returned text is not considered disabling it. Speech-to-text-only APIs do not use this generation setting. This also applies to mono-mode audio generation. See `reasoning_policy.py` for the deliberately conservative allowlist.
 
 Supported provider prefixes are `openai:`, `groq:`, and `gemini:` for dual mode; mono mode supports OpenAI or Gemini. Models must support the required audio or text API.
 
@@ -112,17 +113,19 @@ The `.env` file is ignored by Git. Changing it requires restarting the app. Do n
 | --- | --- | --- |
 | `PROCESSING_MODE` | `dual` | `dual` = transcription + cleanup; `mono` = one audio model |
 | `TRANSCRIPTION_MODEL` | `openai:gpt-transcribe` | Dual-mode speech-to-text model |
-| `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Separate cleanup model, routed to Groq by default |
+| `CLEANUP_MODEL` | `openai:gpt-6-luna` | Separate cleanup model with reasoning disabled, using OpenAI |
 | `MONO_MODEL` | `openai:gpt-audio-mini` | OpenAI or Gemini model for mono mode |
 | `OPENAI_API_KEY` | empty | Required for selected OpenAI models |
-| `GROQ_API_KEY` | empty | Required for selected Groq models |
+| `GROQ_API_KEY` | empty | Required only for selected Groq models |
 | `GEMINI_API_KEY` | empty | Required for selected Gemini models |
 | `PRIMARY_PROVIDER` | `groq` | Provider for legacy unprefixed dual-mode model IDs |
 | `LANGUAGES` | `Portuguese,English` | Speech language hints and cleanup languages |
 | `HOTKEY` | `alt+\` | One global key combination |
 | `SILENCE_THRESHOLD` | `1` | WebRTC VAD aggressiveness: 0–3 (larger = more aggressive) |
-| `SILENCE_DURATION` | `2.0` | Seconds of silence before flushing a chunk |
-| `MIN_CHUNK_DURATION` | `3.0` | Minimum chunk duration in seconds |
+| `SILENCE_DURATION` | `0.7` | Consecutive seconds of non-speech required for a natural split |
+| `MIN_CHUNK_DURATION` | `3.0` | Hold short phrases for more context; always flush on recording stop |
+| `MAX_CHUNK_DURATION` | `12.0` | Hard maximum audio window; forces a split even without a pause |
+| `CHUNK_OVERLAP_DURATION` | `0.8` | Seconds of audio repeated after forced splits in dual mode only |
 | `MONO_PASTE_THRESHOLD` | `0.90` | Score at which mono marks a buffered thought complete |
 | `MONO_CONTEXT_CHARS` | `500` | Maximum characters of unfinished context sent to the next mono chunk |
 | `MONO_TEMPERATURE` | `0.0` | Sampling temperature for mono processing |
@@ -133,6 +136,8 @@ The `.env` file is ignored by Git. Changing it requires restarting the app. Do n
 
 For `gpt-transcribe`, known language names in `LANGUAGES` map to multiple language hints (e.g. `Portuguese,English` → `pt,en`). Other transcription models receive a single hint only if one language is configured. Unknown language names do not map to hints. The cleanup model receives the original language list in its prompt.
 
+Changing the silence, minimum, maximum or overlap values requires restarting the app. A forced split duplicates a short audio tail and may incur slightly more transcription API usage. Overlap removal is intentionally conservative: when the model transcribes the repeated audio differently, some duplicated words may remain; the existing cleanup stage can correct them. No extra AI model or provider is introduced.
+
 The built-in cleanup policy is kept even when `CLEANUP_SYSTEM_PROMPT` is provided. Use that value only for compatible style preferences, not to replace the application's transcript-only rules.
 
 ## Providers and privacy
@@ -140,6 +145,16 @@ The built-in cleanup policy is kept even when `CLEANUP_SYSTEM_PROMPT` is provide
 Dual mode can use OpenAI, Groq, or Gemini for transcription and cleanup if the model supports the request. OpenAI transcription uses the Audio Transcriptions API; cleanup uses each provider's text generation API. Mono uses an audio-capable model plus a structured response with `text` and `completion_score`.
 
 Audio goes to the transcription provider in dual mode; the resulting transcript goes to the cleanup provider. In mono mode, audio and optional preceding text context go to the selected mono provider. Consult each provider's policies before dictating confidential information.
+
+## Updating an existing installation
+
+If you previously copied the old `.env.example`, your `.env` may still contain `CLEANUP_MODEL=openai/gpt-oss-20b`. That Groq model cannot disable reasoning, so the app now refuses it at startup rather than silently switching providers or generating thinking tokens. Update the existing `.env` line to:
+
+```dotenv
+CLEANUP_MODEL=openai:gpt-6-luna
+```
+
+Keep your existing `OPENAI_API_KEY` (already needed for the default `gpt-transcribe`), then restart the app. A second `GROQ_API_KEY` is no longer necessary for the default configuration. For an opt-in Groq alternative that supports non-thinking mode, select `groq:qwen/qwen3.8-27b` and supply a Groq key. Its per-token cost is substantially higher than GPT-OSS 20B.
 
 ## Troubleshooting
 
@@ -157,6 +172,6 @@ Run tests locally in the project environment:
 .\.venv\Scripts\python.exe -m pytest -q tests/
 ```
 
-CI runs on **Windows / Python 3.13** for pull requests changing Python code, tests, dependencies, `start.bat`, or the workflow. Documentation-only pull requests skip CI. Merging an already-tested PR or pushing directly to `main` does not trigger another automatic run; use **Actions → CI → Run workflow** to run it manually.
+CI runs on **Windows / Python 3.13** for pull requests changing Python code, tests, dependencies, `start.bat`, or the workflow. Documentation-only pull requests skip CI. Superseded PR runs are cancelled. Dependencies use cached `uv` installs to reduce runner time while retaining the native Windows launcher smoke test and the full behavior suite. Merging an already-tested PR or pushing directly to `main` does not trigger another automatic run; use **Actions → CI → Run workflow** to run it manually.
 
 The tests mock provider responses and include a disposable Windows batch-launch smoke test. They do **not** call paid APIs, read your private `.env`, or prove the hotkey works interactively in every Windows application.

@@ -24,7 +24,7 @@ def test_mono_incremental_defaults():
 def test_mono_incremental_settings_load_from_env():
     env = {
         "PROCESSING_MODE": "mono",
-        "MONO_MODEL": "gemini:gemini-3.6-flash",
+        "MONO_MODEL": "gemini:gemini-2.5-flash",
         "GEMINI_API_KEY": "gem_test",
         "MONO_PASTE_THRESHOLD": "0.84",
         "MONO_CONTEXT_CHARS": "320",

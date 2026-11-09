@@ -41,7 +41,7 @@ def test_no_target_is_captured_when_recording_starts():
 
 def test_dual_cleanup_is_pasted_once_only_after_stream_finishes():
     obj = _pipeline()
-    obj._futures = [_future("Olá mundo.")]
+    obj._futures = [(_future("Olá mundo."), False)]
     with patch("pipeline.paste") as paste:
         obj._collect_and_paste()
     paste.assert_called_once_with("Olá, mundo!")
@@ -50,7 +50,7 @@ def test_dual_cleanup_is_pasted_once_only_after_stream_finishes():
 
 def test_failed_stream_does_not_paste_half_result_before_fallback():
     obj = _pipeline()
-    obj._futures = [_future("Hello.")]
+    obj._futures = [(_future("Hello."), False)]
 
     def incomplete():
         yield "Half "
@@ -68,7 +68,7 @@ def test_mono_is_buffered_until_collect_finishes():
     obj = _pipeline("mono")
     obj._buffer_mono_output("First complete. ")
     obj._mono.flush.side_effect = lambda: obj._buffer_mono_output("Last incomplete. ")
-    obj._futures = [_future(None)]
+    obj._futures = [(_future(None), False)]
     with patch("pipeline.paste") as paste:
         obj._collect_and_paste()
     paste.assert_called_once_with("First complete. Last incomplete. ")
@@ -81,3 +81,50 @@ def test_no_futures_returns_to_idle_without_paste():
         obj._collect_and_paste()
     paste.assert_not_called()
     obj._on_state.assert_called_once_with("idle")
+
+
+def test_dual_deduplicates_only_a_real_overlapping_boundary():
+    obj = _pipeline()
+    obj._futures = [
+        (_future("A gente precisa de algo"), False),
+        (_future("de algo que funcione"), True),
+    ]
+    with patch("pipeline.paste") as paste:
+        obj._collect_and_paste()
+    obj._cleanup.stream.assert_called_once_with("A gente precisa de algo que funcione")
+    paste.assert_called_once()
+
+
+def test_dual_preserves_repetition_across_natural_pauses():
+    obj = _pipeline()
+    obj._futures = [
+        (_future("Bom dia"), False),
+        (_future("Bom dia de novo"), False),
+    ]
+    with patch("pipeline.paste"):
+        obj._collect_and_paste()
+    obj._cleanup.stream.assert_called_once_with("Bom dia Bom dia de novo")
+
+
+def test_dual_does_not_deduplicate_across_failed_intermediate_segment():
+    obj = _pipeline()
+    obj._futures = [
+        (_future("A gente precisa de algo"), False),
+        (_future(""), True),
+        (_future("de algo amanhã"), True),
+    ]
+    with patch("pipeline.paste"):
+        obj._collect_and_paste()
+    obj._cleanup.stream.assert_called_once_with("A gente precisa de algo de algo amanhã")
+
+
+def test_dispatch_passes_audio_without_metadata_to_transcriber():
+    obj = _pipeline()
+    obj._executor = Mock()
+    submitted = _future("Hello")
+    obj._executor.submit.return_value = submitted
+    obj._transcriber = Mock()
+    from chunker import AudioChunk
+    obj._dispatch_chunk(AudioChunk(b"WAV", overlaps_previous=True))
+    obj._executor.submit.assert_called_once_with(obj._transcriber.transcribe, b"WAV")
+    assert obj._futures == [(submitted, True)]

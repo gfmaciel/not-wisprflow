@@ -50,7 +50,7 @@ def test_gemini_mono_uses_json_schema_and_context():
 
     result = provider.process_audio(
         b"wav",
-        "gemini-3.6-flash",
+        "gemini-2.5-flash",
         "system",
         previous_context="Earlier text",
         temperature=0.0,
@@ -61,3 +61,4 @@ def test_gemini_mono_uses_json_schema_and_context():
     assert "Earlier text" in kwargs["contents"][0]
     assert kwargs["config"]["response_format"]["text"]["mime_type"] == "application/json"
     assert kwargs["config"]["temperature"] == 0.0
+    assert kwargs["config"]["thinking_config"]["thinking_budget"] == 0
