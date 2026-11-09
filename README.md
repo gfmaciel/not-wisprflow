@@ -146,6 +146,16 @@ Dual mode can use OpenAI, Groq, or Gemini for transcription and cleanup if the m
 
 Audio goes to the transcription provider in dual mode; the resulting transcript goes to the cleanup provider. In mono mode, audio and optional preceding text context go to the selected mono provider. Consult each provider's policies before dictating confidential information.
 
+## Updating an existing installation
+
+If you previously copied the old `.env.example`, your `.env` may still contain `CLEANUP_MODEL=openai/gpt-oss-20b`. That Groq model cannot disable reasoning, so the app now refuses it at startup rather than silently switching providers or generating thinking tokens. Update the existing `.env` line to:
+
+```dotenv
+CLEANUP_MODEL=openai:gpt-6-luna
+```
+
+Keep your existing `OPENAI_API_KEY` (already needed for the default `gpt-transcribe`), then restart the app. A second `GROQ_API_KEY` is no longer necessary for the default configuration. For an opt-in Groq alternative that supports non-thinking mode, select `groq:qwen/qwen3.8-27b` and supply a Groq key. Its per-token cost is substantially higher than GPT-OSS 20B.
+
 ## Troubleshooting
 
 - **Startup fails:** open `not-wisprflow.log` or run `.\.venv\Scripts\python.exe main.py`. Check the required provider keys and model names.
