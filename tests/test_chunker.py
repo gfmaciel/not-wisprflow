@@ -57,7 +57,7 @@ def test_wav_format():
     result = None
     for _ in range(3 + n):
         result = c.push(_frame())
-    with wave.open(io.BytesIO(result)) as wf:
+    with wave.open(io.BytesIO(result.wav_bytes)) as wf:
         assert wf.getframerate() == SAMPLE_RATE
         assert wf.getnchannels() == 1
         assert wf.getsampwidth() == 2
