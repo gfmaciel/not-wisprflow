@@ -180,6 +180,14 @@ class Config:
                     f"{primary.upper()}_API_KEY is required by TRANSCRIPTION_MODEL="
                     f"{transcription_model!r}. Select the intended provider explicitly."
                 )
+            # Gemini transcription uses generate_content, which can think by default.
+            # Dedicated OpenAI/Groq transcription APIs do not do LLM reasoning.
+            transcription_provider, transcription_model_id = (
+                parse_model_spec(transcription_model, primary)
+                if _explicit(transcription_model) else (primary, transcription_model)
+            )
+            if transcription_provider == "gemini":
+                text_generation_options("gemini", transcription_model_id)
 
         return cls(
             groq_api_key=groq_api_key,
