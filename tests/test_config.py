@@ -10,7 +10,7 @@ def test_config_loads_from_env():
         "SILENCE_THRESHOLD": "1", "SILENCE_DURATION": "2.0",
         "MIN_CHUNK_DURATION": "3.0", "HOTKEY": "alt+\\",
         "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo",
-        "CLEANUP_MODEL": "openai/gpt-oss-20b",
+        "CLEANUP_MODEL": "qwen/qwen3.8-27b",
     }
     with patch.dict(os.environ, env, clear=True):
         c = Config.from_env()
@@ -29,7 +29,7 @@ def test_config_raises_without_any_api_key():
 
 
 def test_cleanup_does_not_switch_models_if_groq_key_is_missing():
-    env = {"OPENAI_API_KEY": "sk_test"}
+    env = {"OPENAI_API_KEY": "sk_test", "CLEANUP_MODEL": "qwen/qwen3.8-27b"}
     with patch.dict(os.environ, env, clear=True):
         with pytest.raises(ValueError, match="GROQ_API_KEY.*CLEANUP_MODEL"):
             Config.from_env()
@@ -53,7 +53,7 @@ def test_config_openai_primary_with_key():
 
 
 def test_config_groq_no_openai_key():
-    env = {"GROQ_API_KEY": "gsk_test", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}
+    env = {"GROQ_API_KEY": "gsk_test", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo", "CLEANUP_MODEL": "qwen/qwen3.8-27b"}
     with patch.dict(os.environ, env, clear=True):
         c = Config.from_env()
     assert c.openai_api_key is None
@@ -67,7 +67,7 @@ def test_config_invalid_primary_provider():
 
 
 def test_whisper_language_single():
-    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo"}, clear=True):
+    with patch.dict(os.environ, {"GROQ_API_KEY": "x", "LANGUAGES": "Portuguese", "TRANSCRIPTION_MODEL": "whisper-large-v3-turbo", "CLEANUP_MODEL": "qwen/qwen3.8-27b"}, clear=True):
         c = Config.from_env()
     assert c.whisper_language == "pt"
 
@@ -76,6 +76,7 @@ def test_config_defaults():
     with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GROQ_API_KEY": "y"}, clear=True):
         c = Config.from_env()
     assert c.transcription_model == "openai:gpt-transcribe"
+    assert c.cleanup_model == "openai:gpt-6-luna"
     assert c.hotkey == "alt+\\"
     assert c.processing_mode == "dual"
 
@@ -102,7 +103,7 @@ def test_dual_can_mix_openai_and_gemini():
     env = {
         "PROCESSING_MODE": "dual",
         "TRANSCRIPTION_MODEL": "openai:gpt-4o-mini-transcribe",
-        "CLEANUP_MODEL": "gemini:gemini-3.6-flash",
+        "CLEANUP_MODEL": "gemini:gemini-2.5-flash",
         "OPENAI_API_KEY": "sk_test",
         "GEMINI_API_KEY": "gem_test",
     }
