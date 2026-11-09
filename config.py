@@ -5,6 +5,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 from cleanup import _SYS_BASE, with_cleanup_policy
+from reasoning_policy import text_generation_options
 
 
 _LANG_CODES = {
@@ -53,7 +54,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class Config:
     groq_api_key: Optional[str] = None
     transcription_model: str = "openai:gpt-transcribe"
-    cleanup_model: str = "openai/gpt-oss-20b"
+    cleanup_model: str = "openai:gpt-6-luna"
     cleanup_prompt: str = field(default_factory=lambda: _SYS_BASE)
     languages: list[str] = field(default_factory=lambda: ["Portuguese", "English"])
     hotkey: str = "alt+\\"
@@ -93,7 +94,7 @@ class Config:
         gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip() or None
 
         transcription_model = os.getenv("TRANSCRIPTION_MODEL", "openai:gpt-transcribe")
-        cleanup_model = os.getenv("CLEANUP_MODEL", "openai/gpt-oss-20b")
+        cleanup_model = os.getenv("CLEANUP_MODEL", "openai:gpt-6-luna")
         mono_model = os.getenv("MONO_MODEL", "openai:gpt-audio-mini")
         mono_paste_threshold = float(os.getenv("MONO_PASTE_THRESHOLD", "0.90"))
         mono_context_chars = int(os.getenv("MONO_CONTEXT_CHARS", "500"))
@@ -141,6 +142,7 @@ class Config:
                 raise ValueError(
                     f"{mono_provider.upper()}_API_KEY is required by MONO_MODEL={mono_model!r}"
                 )
+            text_generation_options(mono_provider, parse_model_spec(mono_model)[1])
         else:
             for label, spec in (
                 ("TRANSCRIPTION_MODEL", transcription_model),
@@ -168,6 +170,11 @@ class Config:
                     f"{primary.upper()}_API_KEY is required by CLEANUP_MODEL={cleanup_model!r}. "
                     "The cleanup model will not be changed automatically."
                 )
+            cleanup_provider, cleanup_model_id = (
+                parse_model_spec(cleanup_model, primary)
+                if _explicit(cleanup_model) else (primary, cleanup_model)
+            )
+            text_generation_options(cleanup_provider, cleanup_model_id)
             if not _explicit(transcription_model) and not keys[primary]:
                 raise ValueError(
                     f"{primary.upper()}_API_KEY is required by TRANSCRIPTION_MODEL="
