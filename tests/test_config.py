@@ -18,6 +18,8 @@ def test_config_loads_from_env():
     assert c.languages == ["Portuguese", "English"]
     assert c.silence_aggressiveness == 1
     assert c.silence_duration == 2.0
+    assert c.max_chunk_duration == 12.0
+    assert c.chunk_overlap_duration == 0.8
 
 
 def test_config_raises_without_any_api_key():
@@ -144,3 +146,39 @@ def test_local_dotenv_overrides_code_defaults_without_real_secrets(tmp_path):
         config = load_config(dotenv)
         assert config.cleanup_model == "openai:gpt-4o"
         assert config.transcription_model == "openai:gpt-4o-mini-transcribe"
+
+
+def test_new_chunking_defaults():
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "x", "GROQ_API_KEY": "y"}, clear=True):
+        c = Config.from_env()
+    assert c.silence_duration == 0.7
+    assert c.min_chunk_duration == 3.0
+    assert c.max_chunk_duration == 12.0
+    assert c.chunk_overlap_duration == 0.8
+
+
+def test_chunking_parameters_are_configurable():
+    with patch.dict(os.environ, {
+        "OPENAI_API_KEY": "x", "GROQ_API_KEY": "y",
+        "SILENCE_DURATION": "0.5", "MIN_CHUNK_DURATION": "2.0",
+        "MAX_CHUNK_DURATION": "10.0", "CHUNK_OVERLAP_DURATION": "1.0",
+    }, clear=True):
+        c = Config.from_env()
+    assert (c.silence_duration, c.min_chunk_duration, c.max_chunk_duration,
+            c.chunk_overlap_duration) == (0.5, 2.0, 10.0, 1.0)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("SILENCE_DURATION", "0"),
+    ("MAX_CHUNK_DURATION", "-1"),
+    ("CHUNK_OVERLAP_DURATION", "-0.2"),
+    ("CHUNK_OVERLAP_DURATION", "12"),
+    ("MIN_CHUNK_DURATION", "13"),
+    ("CHUNK_OVERLAP_DURATION", "nan"),
+])
+def test_invalid_chunking_settings_fail_at_startup(key, value):
+    with patch.dict(os.environ, {
+        "OPENAI_API_KEY": "x", "GROQ_API_KEY": "y", key: value,
+    }, clear=True):
+        with pytest.raises(ValueError):
+            Config.from_env()
