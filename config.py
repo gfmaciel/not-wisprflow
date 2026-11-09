@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import math
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
@@ -57,8 +58,10 @@ class Config:
     languages: list[str] = field(default_factory=lambda: ["Portuguese", "English"])
     hotkey: str = "alt+\\"
     silence_aggressiveness: int = 1
-    silence_duration: float = 2.0
+    silence_duration: float = 0.7
     min_chunk_duration: float = 3.0
+    max_chunk_duration: float = 12.0
+    chunk_overlap_duration: float = 0.8
     primary_provider: str = "groq"
     openai_api_key: Optional[str] = None
     openai_transcription_model: str = "whisper-1"
@@ -96,6 +99,24 @@ class Config:
         mono_context_chars = int(os.getenv("MONO_CONTEXT_CHARS", "500"))
         mono_temperature = float(os.getenv("MONO_TEMPERATURE", "0.0"))
         mono_log_scores = _env_bool("MONO_LOG_SCORES", False)
+        silence_duration = float(os.getenv("SILENCE_DURATION", "0.7"))
+        min_chunk_duration = float(os.getenv("MIN_CHUNK_DURATION", "3.0"))
+        max_chunk_duration = float(os.getenv("MAX_CHUNK_DURATION", "12.0"))
+        chunk_overlap_duration = float(os.getenv("CHUNK_OVERLAP_DURATION", "0.8"))
+
+        durations = {
+            "SILENCE_DURATION": silence_duration,
+            "MIN_CHUNK_DURATION": min_chunk_duration,
+            "MAX_CHUNK_DURATION": max_chunk_duration,
+            "CHUNK_OVERLAP_DURATION": chunk_overlap_duration,
+        }
+        for key, value in durations.items():
+            if not math.isfinite(value) or (value <= 0 if key != "CHUNK_OVERLAP_DURATION" else value < 0):
+                raise ValueError(f"{key} must be finite and non-negative (positive except overlap)")
+        if max_chunk_duration < min_chunk_duration:
+            raise ValueError("MAX_CHUNK_DURATION must be >= MIN_CHUNK_DURATION")
+        if chunk_overlap_duration >= max_chunk_duration:
+            raise ValueError("CHUNK_OVERLAP_DURATION must be shorter than MAX_CHUNK_DURATION")
 
         if not 0.0 <= mono_paste_threshold <= 1.0:
             raise ValueError("MONO_PASTE_THRESHOLD must be between 0 and 1")
@@ -165,8 +186,10 @@ class Config:
             ],
             hotkey=os.getenv("HOTKEY", "alt+\\").lower(),
             silence_aggressiveness=int(float(os.getenv("SILENCE_THRESHOLD", "1"))),
-            silence_duration=float(os.getenv("SILENCE_DURATION", "2.0")),
-            min_chunk_duration=float(os.getenv("MIN_CHUNK_DURATION", "3.0")),
+            silence_duration=silence_duration,
+            min_chunk_duration=min_chunk_duration,
+            max_chunk_duration=max_chunk_duration,
+            chunk_overlap_duration=chunk_overlap_duration,
             primary_provider=primary,
             openai_api_key=openai_api_key,
             openai_transcription_model=os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1"),
