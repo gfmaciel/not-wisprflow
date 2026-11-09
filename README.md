@@ -54,16 +54,16 @@ The hotkey uses one non-suppressing keyboard hook. It does not consume or rewrit
 ### Dual mode (default)
 
 1. Record 16 kHz mono audio in 30 ms frames through the default microphone.
-2. Detect pauses with WebRTC VAD. Short speech chunks can be held until more audio is available.
-3. Transcribe WAV chunks in parallel with the selected transcription provider.
-4. Merge the transcriptions **in spoken order** and send the result to the separate cleanup model.
-5. Buffer the cleanup response and paste the completed result once.
+2. Detect pauses using WebRTC VAD. By default, 0.7 seconds of silence ends a segment once it reaches the 3-second minimum; shorter phrases are held until more speech or recording stops.
+3. Force a split after 12 seconds without a suitable pause. The next chunk repeats 0.8 seconds of audio from that forced boundary. A natural pause never adds overlap.
+4. Transcribe WAV chunks in parallel with the selected transcription provider. Completed chunks are merged **in spoken order**. For overlapping audio only, remove an exact matching suffix/prefix of at least two words (case/punctuation insensitive); never deduplicate natural-pause chunks.
+5. Send the merged transcript to the existing cleanup provider and paste the final result once.
 
 The cleanup prompt preserves meaning, tone, and language; fixes punctuation, spelling, and clearly unnecessary filler words; and applies clear requests to edit or format the *transcript itself*. Questions, content requests, and external actions are **transcribed**, not carried out. The model is instructed not to invent an email subject, greeting, recipient, signature, or list entry. These are model instructions, not a guarantee of perfect text output.
 
 ### Mono mode
 
-1. Record and chunk audio through the same local pipeline.
+1. Record and chunk audio through the same local pipeline (with the 12-second maximum, but **without audio overlap**, since mono already carries text context).
 2. Send chunks **sequentially** to one audio-capable OpenAI or Gemini model. It returns `text` and a `completion_score` for the combined thought.
 3. Keep incomplete text locally and pass only its trailing excerpt (`MONO_CONTEXT_CHARS`) as context for the next chunk. The model is instructed not to repeat that excerpt.
 4. Buffer complete and incomplete text, then **paste once after processing ends**. The threshold does **not** trigger early keystrokes.
@@ -121,8 +121,10 @@ The `.env` file is ignored by Git. Changing it requires restarting the app. Do n
 | `LANGUAGES` | `Portuguese,English` | Speech language hints and cleanup languages |
 | `HOTKEY` | `alt+\` | One global key combination |
 | `SILENCE_THRESHOLD` | `1` | WebRTC VAD aggressiveness: 0–3 (larger = more aggressive) |
-| `SILENCE_DURATION` | `2.0` | Seconds of silence before flushing a chunk |
-| `MIN_CHUNK_DURATION` | `3.0` | Minimum chunk duration in seconds |
+| `SILENCE_DURATION` | `0.7` | Consecutive seconds of non-speech required for a natural split |
+| `MIN_CHUNK_DURATION` | `3.0` | Hold short phrases for more context; always flush on recording stop |
+| `MAX_CHUNK_DURATION` | `12.0` | Hard maximum audio window; forces a split even without a pause |
+| `CHUNK_OVERLAP_DURATION` | `0.8` | Seconds of audio repeated after forced splits in dual mode only |
 | `MONO_PASTE_THRESHOLD` | `0.90` | Score at which mono marks a buffered thought complete |
 | `MONO_CONTEXT_CHARS` | `500` | Maximum characters of unfinished context sent to the next mono chunk |
 | `MONO_TEMPERATURE` | `0.0` | Sampling temperature for mono processing |
@@ -132,6 +134,8 @@ The `.env` file is ignored by Git. Changing it requires restarting the app. Do n
 | `OPENAI_CLEANUP_MODEL` | `gpt-4o-mini` | Legacy compatibility value; current pipeline does **not** use it to replace cleanup model |
 
 For `gpt-transcribe`, known language names in `LANGUAGES` map to multiple language hints (e.g. `Portuguese,English` → `pt,en`). Other transcription models receive a single hint only if one language is configured. Unknown language names do not map to hints. The cleanup model receives the original language list in its prompt.
+
+Changing the silence, minimum, maximum or overlap values requires restarting the app. A forced split duplicates a short audio tail and may incur slightly more transcription API usage. Overlap removal is intentionally conservative: when the model transcribes the repeated audio differently, some duplicated words may remain; the existing cleanup stage can correct them. No extra AI model or provider is introduced.
 
 The built-in cleanup policy is kept even when `CLEANUP_SYSTEM_PROMPT` is provided. Use that value only for compatible style preferences, not to replace the application's transcript-only rules.
 
