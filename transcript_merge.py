@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-_WORD = re.compile(r"\\S+")
-_EDGE_PUNCTUATION = re.compile(r"^\\W+|\\W+$", re.UNICODE)
+_WORD = re.compile(r"\S+")
+_EDGE_PUNCTUATION = re.compile(r"^\W+|\W+$", re.UNICODE)
 MAX_MATCH_WORDS = 12
 
 
