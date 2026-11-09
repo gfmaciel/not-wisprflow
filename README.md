@@ -10,7 +10,7 @@ The app runs in the system tray. A small waveform appears at the top of the scre
 - **Python 3.13** — the only version tested in GitHub Actions (older versions are not currently verified by CI)
 - API keys for the providers selected in your configuration
 
-**Default dual-mode setup:** OpenAI transcribes with `gpt-transcribe`; Groq cleans with `openai/gpt-oss-20b`. This requires **both** `OPENAI_API_KEY` and `GROQ_API_KEY`. You can change either model in `.env` without changing Python source.
+**Default dual-mode setup:** OpenAI transcribes with `gpt-transcribe`, then `gpt-6-luna` cleans up the text with **`reasoning_effort="none"`**. Only `OPENAI_API_KEY` is required. Models remain configurable in `.env`, but cleanup providers that cannot fully disable reasoning are rejected rather than silently generating reasoning tokens.
 
 ## Install (Windows PowerShell)
 
@@ -26,7 +26,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-3. Enter your `OPENAI_API_KEY` and `GROQ_API_KEY`. Keep the default models or explicitly select the providers you want.
+3. Enter your `OPENAI_API_KEY`. For optional Groq/Gemini configurations, add their corresponding key. Keep the default models or explicitly select supported providers.
 4. Save `.env`, then double-click **`start.bat`** in the project directory.
 
 The launcher prefers `.venv\Scripts\pythonw.exe`, then `venv\Scripts\pythonw.exe`, then an installed windowless Python launcher. It starts **only on demand**; it does not create a startup entry, scheduled task, or background service. Windows may briefly show a command window while opening the batch file, but no terminal remains open.
@@ -75,24 +75,25 @@ The cleanup prompt preserves meaning, tone, and language; fixes punctuation, spe
 Prefer the explicit `provider:model` format:
 
 ```dotenv
-# Default: OpenAI transcription + Groq cleanup
+# Default: OpenAI transcription + OpenAI cleanup, without reasoning
 PROCESSING_MODE=dual
 TRANSCRIPTION_MODEL=openai:gpt-transcribe
-CLEANUP_MODEL=openai/gpt-oss-20b
+CLEANUP_MODEL=openai:gpt-6-luna
 PRIMARY_PROVIDER=groq
 ```
 
-The cleanup model above has an **unprefixed legacy Groq model ID**: `/` is part of the model name, not a provider separator. To select a different provider explicitly, use a colon:
+Provider names use the `provider:model` syntax. The colon is the separator, while a slash in a model name is just part of its ID:
 
 ```dotenv
-# Example: OpenAI for both dual-mode stages (only OPENAI_API_KEY needed)
-TRANSCRIPTION_MODEL=openai:gpt-transcribe
-CLEANUP_MODEL=openai:gpt-4o-mini
+# Alternative: Groq Qwen 3.8 (reasoning_effort=none; requires GROQ_API_KEY)
+CLEANUP_MODEL=groq:qwen/qwen3.8-27b
 
-# Alternative: one model for both tasks (only OPENAI_API_KEY needed)
+# Alternative: one OpenAI audio model for both tasks
 PROCESSING_MODE=mono
 MONO_MODEL=openai:gpt-audio-mini
 ```
+
+**Zero-reasoning policy:** For every text-generation request, the app selects a model/API configuration known to support zero reasoning. The default GPT-6 Luna explicitly receives `reasoning_effort="none"`; Groq Qwen 3.8 receives the same setting; supported Gemini 2.5 Flash models receive `thinking_budget=0`. Groq GPT-OSS does **not** support turning reasoning off, and Gemini 3.x cannot disable thinking. Selecting them for generation produces an explicit error; hiding reasoning in the returned text is not considered disabling it. Speech-to-text-only APIs do not use this generation setting. This also applies to mono-mode audio generation. See `reasoning_policy.py` for the deliberately conservative allowlist.
 
 Supported provider prefixes are `openai:`, `groq:`, and `gemini:` for dual mode; mono mode supports OpenAI or Gemini. Models must support the required audio or text API.
 
@@ -112,10 +113,10 @@ The `.env` file is ignored by Git. Changing it requires restarting the app. Do n
 | --- | --- | --- |
 | `PROCESSING_MODE` | `dual` | `dual` = transcription + cleanup; `mono` = one audio model |
 | `TRANSCRIPTION_MODEL` | `openai:gpt-transcribe` | Dual-mode speech-to-text model |
-| `CLEANUP_MODEL` | `openai/gpt-oss-20b` | Separate cleanup model, routed to Groq by default |
+| `CLEANUP_MODEL` | `openai:gpt-6-luna` | Separate cleanup model with reasoning disabled, using OpenAI |
 | `MONO_MODEL` | `openai:gpt-audio-mini` | OpenAI or Gemini model for mono mode |
 | `OPENAI_API_KEY` | empty | Required for selected OpenAI models |
-| `GROQ_API_KEY` | empty | Required for selected Groq models |
+| `GROQ_API_KEY` | empty | Required only for selected Groq models |
 | `GEMINI_API_KEY` | empty | Required for selected Gemini models |
 | `PRIMARY_PROVIDER` | `groq` | Provider for legacy unprefixed dual-mode model IDs |
 | `LANGUAGES` | `Portuguese,English` | Speech language hints and cleanup languages |
@@ -161,6 +162,6 @@ Run tests locally in the project environment:
 .\.venv\Scripts\python.exe -m pytest -q tests/
 ```
 
-CI runs on **Windows / Python 3.13** for pull requests changing Python code, tests, dependencies, `start.bat`, or the workflow. Documentation-only pull requests skip CI. Merging an already-tested PR or pushing directly to `main` does not trigger another automatic run; use **Actions → CI → Run workflow** to run it manually.
+CI runs on **Windows / Python 3.13** for pull requests changing Python code, tests, dependencies, `start.bat`, or the workflow. Documentation-only pull requests skip CI. Superseded PR runs are cancelled. Dependencies use cached `uv` installs to reduce runner time while retaining the native Windows launcher smoke test and the full behavior suite. Merging an already-tested PR or pushing directly to `main` does not trigger another automatic run; use **Actions → CI → Run workflow** to run it manually.
 
 The tests mock provider responses and include a disposable Windows batch-launch smoke test. They do **not** call paid APIs, read your private `.env`, or prove the hotkey works interactively in every Windows application.
